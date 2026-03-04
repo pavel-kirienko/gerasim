@@ -41,6 +41,7 @@ interface ActiveBroadcast {
   expireUs: number;
   startUs: number;
   src: number;
+  event: EventRecord;
 }
 
 export class Renderer {
@@ -94,6 +95,7 @@ export class Renderer {
           startUs: timeUs,
           expireUs: timeUs + BROADCAST_PERSIST_US,
           src: ev.src,
+          event: ev,
         });
       } else if (ev.event === "unicast" || ev.event === "forward") {
         const delayUs = (ev.details?.delayUs as number) || 500_000;
@@ -132,7 +134,7 @@ export class Renderer {
   }
 
   private computeBoxSize(snap: NodeSnapshot): { w: number; h: number } {
-    let rows = 3; // header + next HB + next tx
+    let rows = 4; // header + next HB + next tx + last urgent
     rows += 1;    // separator
     rows += 1;    // topic column headers
     rows += Math.max(snap.topics.length, 1); // topics or "(no topics)"
@@ -209,18 +211,32 @@ export class Renderer {
     }
     putText(`next tx: ${nextTopicName}`);
 
+    // Row 3: last urgent gossip
+    if (snap.online && snap.lastUrgentUs > 0) {
+      const ago = (timeUs - snap.lastUrgentUs) / 1_000_000;
+      putText(`last urgent: ${ago.toFixed(2)}s ago`);
+    } else {
+      putText("last urgent: --");
+    }
+
     // Separator
     putText("\u2500".repeat(32), { color: C_SEPARATOR });
 
     // Topic table header
-    putText("topic name    subject  evict", { bold: true });
+    const hdrName = "topic name".padEnd(12);
+    const hdrSid = "subject".padStart(8);
+    const hdrEv = "ev".padStart(2);
+    const hdrLage = "lage".padStart(4);
+    putText(`${hdrName} ${hdrSid}  ${hdrEv} ${hdrLage}`, { bold: true });
 
     // Topics
     if (snap.topics.length > 0) {
       for (const ts of snap.topics) {
         const nm = ts.name.length > 12 ? ts.name.slice(0, 12) : ts.name.padEnd(12);
-        const sid = String(ts.subjectId).padStart(10);
-        putText(`${nm} ${sid}  ${ts.evictions}`);
+        const sid = String(ts.subjectId).padStart(8);
+        const ev = String(ts.evictions).padStart(2);
+        const lage = String(ts.lage).padStart(4);
+        putText(`${nm} ${sid}  ${ev} ${lage}`);
       }
     } else {
       putText("(no topics)", { color: C_PEER_EMPTY });
@@ -242,6 +258,45 @@ export class Renderer {
     if (nEmpty > 0) {
       putText(`  (${nEmpty} empty)`, { color: C_PEER_EMPTY });
     }
+  }
+
+  // -- Info box helper --
+
+  private drawInfoBox(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number,
+    lines: string[],
+    textColor: string,
+    alpha: number,
+  ): void {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = "9px monospace";
+    const infoLH = 12;
+    const pad = 4;
+    let maxW = 0;
+    for (const line of lines) {
+      const m = ctx.measureText(line).width;
+      if (m > maxW) maxW = m;
+    }
+    const boxW = maxW + pad * 2;
+    const boxH = lines.length * infoLH + pad * 2;
+
+    ctx.fillStyle = "rgba(30,30,30,0.85)";
+    ctx.strokeStyle = textColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, boxW, boxH, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = textColor;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], x + pad, y + pad + i * infoLH);
+    }
+    ctx.restore();
   }
 
   // -- Broadcast circles --
@@ -267,6 +322,19 @@ export class Renderer {
       ctx.arc(srcPos.x, srcPos.y, radius, 0, 2 * Math.PI);
       ctx.stroke();
       ctx.restore();
+
+      // Info box near source node
+      const d = bc.event.details || {};
+      const bName = (d.name as string) || "?";
+      const bSid = d.subjectId as number ?? "?";
+      const bEv = d.evictions as number ?? "?";
+      const bLage = d.lage as number ?? "?";
+      const infoLines = [
+        `${bName}  S=${bSid}`,
+        `ev=${bEv}  lage=${bLage}`,
+      ];
+      const srcBox = this.nodeBoxSizes.get(bc.src) || { w: BOX_WIDTH, h: 100 };
+      this.drawInfoBox(ctx, srcPos.x + srcBox.w / 2 + 10, srcPos.y - 20, infoLines, C_BROADCAST, alpha);
     }
   }
 
@@ -328,21 +396,23 @@ export class Renderer {
         headY = y1;
       }
 
-      // Elapsed time label near arrowhead
-      const elapsedS = (timeUs - msg.startUs) / 1_000_000;
+      // Info box near arrowhead
       const ldx = headX - x0, ldy = headY - y0;
       const llen = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
       const lnx = -ldy / llen, lny = ldx / llen;
       const labelX = headX + lnx * 14, labelY = headY + lny * 14;
 
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.font = "9px monospace";
-      ctx.fillStyle = color;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(`${elapsedS.toFixed(1)}s`, labelX, labelY);
-      ctx.restore();
+      const ad = ev.details || {};
+      const aName = (ad.name as string) || "?";
+      const aSid = ad.subjectId as number ?? "?";
+      const aEv = ad.evictions as number ?? "?";
+      const aLage = ad.lage as number ?? "?";
+      const aTtl = ad.ttl as number ?? "?";
+      const arrowLines = [
+        `${aName}  S=${aSid}`,
+        `ev=${aEv} lage=${aLage} ttl=${aTtl}`,
+      ];
+      this.drawInfoBox(ctx, labelX, labelY - 12, arrowLines, color, alpha);
     }
   }
 

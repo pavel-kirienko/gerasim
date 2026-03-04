@@ -8,7 +8,7 @@ export const GOSSIP_TTL          = 16;
 export const GOSSIP_OUTDEGREE    = 2;
 export const GOSSIP_PEER_COUNT   = 8;
 export const GOSSIP_DEDUP_CAP    = 16;
-export const GOSSIP_DEDUP_TIMEOUT = 1_000_000;       // 1 s
+export const GOSSIP_DEDUP_TIMEOUT = 3_000_000;       // 3 s
 export const GOSSIP_PEER_STALE   = 2 * GOSSIP_PERIOD; // 6 s
 export const GOSSIP_PEER_ELIGIBLE = 3 * GOSSIP_PERIOD; // 9 s
 export const PEER_REPLACE_PROB   = 1.0 / 8;
@@ -21,7 +21,7 @@ export const LAGE_MAX            = 35;
 // Rendering constants
 // ---------------------------------------------------------------------------
 
-export const PROPAGATION_SPEED    = 400;               // pixels per second of sim time
+export const PROPAGATION_SPEED    = 1200;              // pixels per second of sim time
 export const MSG_PERSIST_US      = 3_000_000;         // 3 s — unicast/forward arrow linger after arrival
 export const BROADCAST_PERSIST_US = 5_000_000;        // 5 s — expanding circle lifetime
 export const CONFLICT_FLASH_US   = 400_000;          // 400 ms

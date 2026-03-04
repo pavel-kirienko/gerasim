@@ -181,6 +181,7 @@ function makeNode(nodeId: number): Node {
     nextBroadcastUs: 0,
     partitionSet: "A",
     peerReplacementMoratoriumUntil: 0,
+    lastUrgentUs: 0,
   };
 }
 
@@ -261,6 +262,7 @@ export class Simulation {
     for (const d of node.dedup) { d.hash = 0n; d.lastSeenUs = 0; }
     node.nextBroadcastUs = 0;
     node.peerReplacementMoratoriumUntil = 0;
+    node.lastUrgentUs = 0;
     this.pushEvent(this.nowUs, "NODE_JOIN", { node_id: nodeId });
   }
 
@@ -289,6 +291,8 @@ export class Simulation {
     const hash = topicHash(name);
     const topic: Topic = { name, hash, evictions: 0, tsCreatedUs: this.nowUs };
     nodeAddTopic(node, topic);
+    // Resolve local SID collisions
+    this.resolveLocalCollisions(node, topic);
     // Schedule urgent gossip so the topic is announced quickly
     if (!node.gossipUrgent.includes(hash)) {
       node.gossipUrgent.push(hash);
@@ -467,7 +471,7 @@ export class Simulation {
     }
     pushLog({
       timeUs: this.nowUs, event: "broadcast", src: sender.nodeId, dst: null,
-      topicHash: hash, details: { evictions, lage, name },
+      topicHash: hash, details: { evictions, lage, name, subjectId: subjectId(hash, evictions, SUBJECT_ID_MODULUS) },
     });
   }
 
@@ -486,7 +490,7 @@ export class Simulation {
     });
     pushLog({
       timeUs: this.nowUs, event: msgType, src: sender.nodeId, dst: destId,
-      topicHash: hash, details: { evictions, lage, ttl, delayUs: delay },
+      topicHash: hash, details: { evictions, lage, ttl, delayUs: delay, name, subjectId: subjectId(hash, evictions, SUBJECT_ID_MODULUS) },
     });
   }
 
@@ -589,6 +593,7 @@ export class Simulation {
 
       if (fromUrgent) {
         // Was urgent — send unicast epidemic to peers
+        node.lastUrgentUs = this.nowUs;
         const blacklist = new Set<number>();
         for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
           const peer = this.randomEligiblePeer(node, blacklist);
@@ -601,9 +606,9 @@ export class Simulation {
               node, peer.nodeId, topic.hash,
               topic.evictions, lage, topic.name, GOSSIP_TTL, "unicast", pushLog,
             );
-            dedup.hash = dhash;
-            dedup.lastSeenUs = this.nowUs;
           }
+          dedup.hash = dhash;
+          dedup.lastSeenUs = this.nowUs;
         }
       } else {
         // Normal broadcast
@@ -631,9 +636,12 @@ export class Simulation {
       const lage = topicLage(topic.tsCreatedUs, this.nowUs);
       const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
       const dedup = this.dedupMatchOrLru(node, dhash);
-      if (!this.dedupIsFresh(dedup, dhash)) continue;
+      if (!this.dedupIsFresh(dedup, dhash)) {
+        dedup.lastSeenUs = this.nowUs;
+        continue;
+      }
+      node.lastUrgentUs = this.nowUs;
       const blacklist = new Set<number>();
-      let sent = false;
       for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
         const peer = this.randomEligiblePeer(node, blacklist);
         if (!peer) break;
@@ -642,12 +650,9 @@ export class Simulation {
           node, peer.nodeId, topic.hash,
           topic.evictions, lage, topic.name, GOSSIP_TTL, "unicast", pushLog,
         );
-        sent = true;
       }
-      if (sent) {
-        dedup.hash = dhash;
-        dedup.lastSeenUs = this.nowUs;
-      }
+      dedup.hash = dhash;
+      dedup.lastSeenUs = this.nowUs;
     }
   }
 
@@ -768,6 +773,36 @@ export class Simulation {
     return win;
   }
 
+  /** Resolve SID collisions for a newly added topic, following cy.c pairwise semantics.
+   *  The bumped topic is chased until it lands on a free SID. */
+  private resolveLocalCollisions(node: Node, topic: Topic): void {
+    let current = topic;
+    for (let round = 0; round < 1000; round++) {
+      const sid = topicSubjectId(current);
+      const other = this.findLocalCollision(node, current, sid);
+      if (!other) break;
+      const currentLage = topicLage(current.tsCreatedUs, this.nowUs);
+      const otherLage = topicLage(other.tsCreatedUs, this.nowUs);
+      if (leftWins(otherLage, other.hash, currentLage, current.hash)) {
+        // other wins — current bumps, chase current
+        current.evictions += 1;
+        this.scheduleUrgent(node, other.hash);
+      } else {
+        // current wins — other bumps, chase other
+        other.evictions += 1;
+        this.scheduleUrgent(node, current.hash);
+        current = other;
+      }
+    }
+  }
+
+  private findLocalCollision(node: Node, exclude: Topic, sid: number): Topic | null {
+    for (const t of node.topics.values()) {
+      if (t !== exclude && topicSubjectId(t) === sid) return t;
+    }
+    return null;
+  }
+
   private scheduleUrgent(node: Node, hash: bigint): void {
     if (!node.gossipUrgent.includes(hash)) {
       node.gossipUrgent.push(hash);
@@ -795,7 +830,7 @@ export class Simulation {
     for (const t of sorted) {
       topics.push({
         name: t.name, hash: t.hash, evictions: t.evictions,
-        subjectId: topicSubjectId(t),
+        subjectId: topicSubjectId(t), lage: topicLage(t.tsCreatedUs, this.nowUs),
       });
     }
     const peers: (PeerSnap | null)[] = node.peers.map(
@@ -809,6 +844,7 @@ export class Simulation {
       gossipQueueFront: node.gossipQueue.length > 0 ? node.gossipQueue[0] : null,
       gossipUrgentFront: node.gossipUrgent.length > 0 ? node.gossipUrgent[0] : null,
       nextBroadcastUs: node.nextBroadcastUs,
+      lastUrgentUs: node.lastUrgentUs,
       partitionSet: node.partitionSet,
     };
   }

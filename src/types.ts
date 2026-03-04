@@ -35,6 +35,7 @@ export interface Node {
   nextBroadcastUs: number;
   partitionSet: "A" | "B";
   peerReplacementMoratoriumUntil: number;
+  lastUrgentUs: number;
 }
 
 export interface EventRecord {
@@ -53,6 +54,7 @@ export interface TopicSnap {
   hash: bigint;
   evictions: number;
   subjectId: number;
+  lage: number;
 }
 
 export interface PeerSnap {
@@ -68,5 +70,6 @@ export interface NodeSnapshot {
   gossipQueueFront: bigint | null;
   gossipUrgentFront: bigint | null;
   nextBroadcastUs: number;
+  lastUrgentUs: number;
   partitionSet: "A" | "B";
 }
