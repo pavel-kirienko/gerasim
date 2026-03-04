@@ -32,6 +32,7 @@ function createSim(): Simulation {
 function relayout(): void {
   const ids = [...sim.nodes.keys()].sort((a, b) => a - b);
   renderer.layoutNodes(ids);
+  sim.setNodePositions(renderer.nodePositions);
 }
 
 function resizeCanvas(): void {
@@ -43,6 +44,7 @@ function resizeCanvas(): void {
 
 function rewind(): void {
   sim = createSim();
+  ui.setSim(sim);
   lastWallTime = null;
   relayout();
 }

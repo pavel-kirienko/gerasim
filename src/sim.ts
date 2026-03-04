@@ -11,6 +11,7 @@ import {
   GOSSIP_PEER_COUNT, GOSSIP_DEDUP_CAP, GOSSIP_DEDUP_TIMEOUT,
   GOSSIP_PEER_STALE, GOSSIP_PEER_ELIGIBLE, PEER_REPLACE_PROB,
   SUBJECT_ID_PINNED_MAX, SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX,
+  PROPAGATION_SPEED,
 } from "./constants.js";
 
 // ---------------------------------------------------------------------------
@@ -205,6 +206,7 @@ export class Simulation {
   net: NetworkConfig;
   rng: Rng;
   nodes: Map<number, Node> = new Map();
+  nodePositions: Map<number, { x: number; y: number }> = new Map();
   nowUs = 0;
 
   private queue = new MinHeap();
@@ -220,6 +222,10 @@ export class Simulation {
     this.net = net;
     this.seed = rngSeed;
     this.rng = new Rng(rngSeed);
+  }
+
+  setNodePositions(positions: Map<number, { x: number; y: number }>): void {
+    this.nodePositions = positions;
   }
 
   // -- public interactive API --
@@ -263,18 +269,22 @@ export class Simulation {
     if (node) node.partitionSet = set;
   }
 
-  /** Create a topic on a node. If targetSid is given, generate a name whose preferred
-   *  subject-ID (at evictions=0) equals targetSid — useful for provoking collisions. */
-  addTopicToNode(nodeId: number, targetSid?: number): Topic | null {
+  /** Create a topic on a node.
+   *  - name given: use that name directly
+   *  - targetSid given (no name): generate a short name whose preferred subject-ID at
+   *    evictions=0 equals targetSid — useful for provoking collisions
+   *  - neither: auto-name "topic/a", "topic/b", ... */
+  addTopicToNode(nodeId: number, name?: string, targetSid?: number): Topic | null {
     const node = this.nodes.get(nodeId);
     if (!node) return null;
-    let name: string;
-    if (targetSid !== undefined) {
-      name = this.findNameForSid(targetSid);
-    } else {
-      name = "topic/" + String.fromCharCode(this.nextAutoTopicChar);
-      this.nextAutoTopicChar++;
-      if (this.nextAutoTopicChar > 122) this.nextAutoTopicChar = 97; // wrap
+    if (name === undefined) {
+      if (targetSid !== undefined) {
+        name = this.findNameForSid(targetSid);
+      } else {
+        name = "topic/" + String.fromCharCode(this.nextAutoTopicChar);
+        this.nextAutoTopicChar++;
+        if (this.nextAutoTopicChar > 122) this.nextAutoTopicChar = 97; // wrap
+      }
     }
     const hash = topicHash(name);
     const topic: Topic = { name, hash, evictions: 0, tsCreatedUs: this.nowUs };
@@ -286,16 +296,14 @@ export class Simulation {
     return topic;
   }
 
-  /** Generate a random topic name whose preferred subject-ID at evictions=0 equals targetSid. */
+  /** Generate a short random topic name whose preferred subject-ID at evictions=0 equals targetSid. */
   private findNameForSid(targetSid: number): string {
-    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    const prefix = "topic/";
+    const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
     for (;;) {
-      let suffix = "";
-      for (let i = 0; i < 12; i++) {
-        suffix += alphabet[this.rng.randrange(alphabet.length)];
+      let name = "";
+      for (let i = 0; i < 4; i++) {
+        name += alphabet[this.rng.randrange(alphabet.length)];
       }
-      const name = prefix + suffix;
       const hash = topicHash(name);
       if (subjectId(hash, 0, SUBJECT_ID_MODULUS) === targetSid) {
         return name;
@@ -419,6 +427,19 @@ export class Simulation {
     return this.rng.randint(lo, hi);
   }
 
+  /** Distance-proportional delay: delay = distance / PROPAGATION_SPEED with ±10% jitter. */
+  private distanceDelay(srcId: number, dstId: number): number {
+    const srcPos = this.nodePositions.get(srcId);
+    const dstPos = this.nodePositions.get(dstId);
+    if (!srcPos || !dstPos) return this.randDelay();
+    const dx = dstPos.x - srcPos.x;
+    const dy = dstPos.y - srcPos.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const baseDelay = (distance / PROPAGATION_SPEED) * 1_000_000;
+    const jitter = 1.0 + (this.rng.random() - 0.5) * 0.2;
+    return Math.max(1000, Math.round(baseDelay * jitter));
+  }
+
   private onlineNodes(): Node[] {
     const result: Node[] = [];
     for (const n of this.nodes.values()) {
@@ -438,7 +459,7 @@ export class Simulation {
       if (!dest.online) continue;
       if (dest.partitionSet !== sender.partitionSet) continue;
       if (this.rng.random() < this.net.lossProbability) continue;
-      const delay = this.randDelay();
+      const delay = this.distanceDelay(sender.nodeId, dest.nodeId);
       this.pushEvent(this.nowUs + delay, "MSG_ARRIVE", {
         src: sender.nodeId, dst: dest.nodeId,
         topic_hash: hash, evictions, lage, name, ttl: 0, msg_type: "broadcast",
@@ -458,14 +479,14 @@ export class Simulation {
     const dest = this.nodes.get(destId);
     if (dest && dest.partitionSet !== sender.partitionSet) return;
     if (this.rng.random() < this.net.lossProbability) return;
-    const delay = this.randDelay();
+    const delay = this.distanceDelay(sender.nodeId, destId);
     this.pushEvent(this.nowUs + delay, "MSG_ARRIVE", {
       src: sender.nodeId, dst: destId,
       topic_hash: hash, evictions, lage, name, ttl, msg_type: msgType,
     });
     pushLog({
       timeUs: this.nowUs, event: msgType, src: sender.nodeId, dst: destId,
-      topicHash: hash, details: { evictions, lage, ttl },
+      topicHash: hash, details: { evictions, lage, ttl, delayUs: delay },
     });
   }
 
