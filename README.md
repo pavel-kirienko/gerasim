@@ -1,6 +1,8 @@
 # Cyphal v1.1 epidemic gossip simulation and visualization tool
 
-This is a simple script that simulates the behavior of Cyphal v1.1 networks, specifically the epidemic gossips around nodes joining/leaving the network and CRDT consensus repairs. The protocol implementation and specification are available in <https://github.com/OpenCyphal-Garage/cy>. Each node broadcasts a gossip message every N seconds. Every other online node receives that gossip, adjusted for network losses. When CRDT consensus issues are found, urgent repairs are initiated, which amount to two things:
+This is a simple script that simulates the behavior of Cyphal v1.1 networks, specifically the epidemic gossips around nodes joining/leaving the network and CRDT consensus repairs. The protocol reference implementation and specification are available in the submodule [`submodules/cy`](submodules/cy).
+
+Each node broadcasts a gossip message every N seconds. Every other online node receives that gossip, adjusted for network losses. When CRDT consensus issues are found, urgent repairs are initiated, which amount to two things:
 
 - **Constant-cadence broadcast:** The affected entry (topic) is scheduled to broadcast-gossip at the next slot, but it may take up to 3 seconds due to the fixed broadcast cadence, which is slow. Broadcast gossips provide a deterministric upper bound on the worst case convergence times and node discovery times.
 

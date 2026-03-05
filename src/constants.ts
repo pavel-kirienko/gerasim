@@ -21,7 +21,7 @@ export const LAGE_MAX            = 35;
 // Rendering constants
 // ---------------------------------------------------------------------------
 
-export const PROPAGATION_SPEED    = 1200;              // pixels per second of sim time
+export const PROPAGATION_SPEED    = 8000;              // pixels per second of sim time
 export const MSG_PERSIST_US      = 3_000_000;         // 3 s — unicast/forward arrow linger after arrival
 export const BROADCAST_PERSIST_US = 5_000_000;        // 5 s — expanding circle lifetime
 export const CONFLICT_FLASH_US   = 400_000;          // 400 ms

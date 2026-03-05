@@ -592,9 +592,10 @@ export class Simulation {
       const lage = topicLage(topic.tsCreatedUs, this.nowUs);
 
       if (fromUrgent) {
-        // Was urgent — send unicast epidemic to peers
+        // Was urgent — send unicast epidemic to peers; fall back to broadcast if none
         node.lastUrgentUs = this.nowUs;
         const blacklist = new Set<number>();
+        let sent = false;
         for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
           const peer = this.randomEligiblePeer(node, blacklist);
           if (!peer) break;
@@ -606,7 +607,16 @@ export class Simulation {
               node, peer.nodeId, topic.hash,
               topic.evictions, lage, topic.name, GOSSIP_TTL, "unicast", pushLog,
             );
+            sent = true;
           }
+          dedup.hash = dhash;
+          dedup.lastSeenUs = this.nowUs;
+        }
+        if (!sent) {
+          // No eligible peers — fall back to broadcast
+          this.sendBroadcast(node, topic.hash, topic.evictions, lage, topic.name, pushLog);
+          const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
+          const dedup = this.dedupMatchOrLru(node, dhash);
           dedup.hash = dhash;
           dedup.lastSeenUs = this.nowUs;
         }

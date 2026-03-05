@@ -1,0 +1,4 @@
+[submodule "submodules/cy"]
+	path = submodules/cy
+	url = https://github.com/OpenCyphal-Garage/cy
+	branch = dev2

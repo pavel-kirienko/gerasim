@@ -39,7 +39,7 @@ export class UI {
 
   // State
   playing = true;
-  speedMultiplier = 1.0;
+  speedMultiplier = 0.1;
 
   // Callbacks
   onRewind: (() => void) | null = null;
@@ -89,23 +89,24 @@ export class UI {
       this.onRewind?.();
     });
 
+    const speedSteps = [0.001, 0.01, 0.1, 1];
+    const defaultIdx = speedSteps.indexOf(0.1);
     this.speedSlider = document.createElement("input");
     this.speedSlider.type = "range";
-    this.speedSlider.min = "-22";
-    this.speedSlider.max = "10";
-    this.speedSlider.value = "0";
+    this.speedSlider.min = "0";
+    this.speedSlider.max = String(speedSteps.length - 1);
+    this.speedSlider.value = String(defaultIdx);
     this.speedSlider.step = "1";
     this.speedSlider.style.width = "120px";
     this.speedSlider.style.verticalAlign = "middle";
     this.speedSlider.addEventListener("input", () => {
-      const val = parseInt(this.speedSlider.value);
-      this.speedMultiplier = Math.pow(2, val / 3.33);
-      const s = this.speedMultiplier;
-      this.speedLabel.textContent = (s < 0.1 ? s.toFixed(3) : s < 1 ? s.toFixed(2) : s.toFixed(1)) + "x";
+      const idx = parseInt(this.speedSlider.value);
+      this.speedMultiplier = speedSteps[idx];
+      this.speedLabel.textContent = "x" + this.speedMultiplier;
     });
 
     this.speedLabel = document.createElement("span");
-    this.speedLabel.textContent = "1.0x";
+    this.speedLabel.textContent = "x" + this.speedMultiplier;
     this.speedLabel.style.marginLeft = "4px";
     this.speedLabel.style.minWidth = "60px";
     this.speedLabel.style.display = "inline-block";
