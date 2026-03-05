@@ -1,6 +1,18 @@
-# Cyphal v1.1 epidemic gossip simulation and visualization tool
+<div align="center">
 
-This is a simple script that simulates the behavior of Cyphal v1.1 networks, specifically the epidemic gossips around nodes joining/leaving the network and CRDT consensus repairs. The protocol reference implementation and specification are available in the submodule [`submodules/cy`](submodules/cy).
+<img src="https://opencyphal.org/favicon-192.png" width="60px">
+
+# Cyphal v1.1 distributed consensus visual simulator
+
+🌐 **[gerasim.opencyphal.org](https://gerasim.opencyphal.org/)**
+
+[![Forum](https://img.shields.io/discourse/https/forum.opencyphal.org/users.svg?logo=discourse&color=1700b3)](https://forum.opencyphal.org)
+
+</div>
+
+-----
+
+This is a simple script that simulates the behavior of Cyphal v1.1 networks, specifically the epidemic gossips around nodes joining/leaving the network and CRDT consensus repairs. The protocol reference implementation and specification are available in `submodules/cy`.
 
 Each node broadcasts a gossip message every N seconds. Every other online node receives that gossip, adjusted for network losses. When CRDT consensus issues are found, urgent repairs are initiated, which amount to two things:
 
@@ -10,7 +22,7 @@ Each node broadcasts a gossip message every N seconds. Every other online node r
 
 ## Usage
 
-Requires Node.js (for `npx`):
+Requires Node.js:
 
 ```bash
 npm install
