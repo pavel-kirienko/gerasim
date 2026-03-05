@@ -3,7 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import { NodeSnapshot, TopicSnap } from "./types.js";
-import { Simulation } from "./sim.js";
+import { Simulation, topicHash, subjectId } from "./sim.js";
+import { SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX } from "./constants.js";
 import { Renderer } from "./render.js";
 
 // Colors for legend
@@ -386,27 +387,7 @@ export class UI {
     const addTopicBtn = this.miniBtn("+Topic");
     addTopicBtn.style.background = "#2980b9";
     addTopicBtn.addEventListener("click", () => {
-      const name = window.prompt("Topic name (leave empty for auto):", "");
-      if (name === null) return; // cancelled
-      if (name === "") {
-        this.sim.addTopicToNode(nodeId);
-      } else {
-        this.sim.addTopicToNode(nodeId, name);
-      }
-      this.prevTopicKeys.delete(nodeId); // force rebuild
-      this.onUserInteraction?.();
-    });
-
-    const collideBtn = this.miniBtn("+Collide");
-    collideBtn.style.background = "#8e44ad";
-    collideBtn.addEventListener("click", () => {
-      const input = window.prompt("Target subject-ID (decimal) to collide with:", "");
-      if (input === null || input === "") return;
-      const sid = parseInt(input, 10);
-      if (isNaN(sid) || sid < 0) return;
-      this.sim.addTopicToNode(nodeId, undefined, sid);
-      this.prevTopicKeys.delete(nodeId); // force rebuild
-      this.onUserInteraction?.();
+      this.openTopicDialog(nodeId);
     });
 
     const topicContainer = document.createElement("div");
@@ -417,7 +398,7 @@ export class UI {
     topicContainer.style.width = "100%";
     topicContainer.style.justifyContent = "center";
 
-    el.append(partBtn, restartBtn, destroyBtn, addTopicBtn, collideBtn, topicContainer);
+    el.append(partBtn, restartBtn, destroyBtn, addTopicBtn, topicContainer);
     return el;
   }
 
@@ -456,6 +437,191 @@ export class UI {
       row.append(nameBtn, rmBtn);
       container.appendChild(row);
     }
+  }
+
+  private openTopicDialog(nodeId: number): void {
+    // Remove any existing dialog
+    document.querySelector(".topic-dialog")?.remove();
+
+    const dlg = document.createElement("div");
+    dlg.className = "topic-dialog";
+    dlg.style.cssText = `
+      position: fixed; z-index: 1000;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: #2a2a2a; border: 1px solid #666; border-radius: 6px;
+      padding: 12px; min-width: 280px;
+      font: 12px "Ubuntu Mono", monospace; color: #eee;
+      display: flex; flex-direction: column; gap: 8px;
+    `;
+
+    const title = document.createElement("div");
+    title.textContent = `Add topic to N${nodeId}`;
+    title.style.fontWeight = "bold";
+    title.style.marginBottom = "2px";
+
+    // Name input
+    const nameRow = document.createElement("div");
+    nameRow.style.display = "flex";
+    nameRow.style.alignItems = "center";
+    nameRow.style.gap = "6px";
+    const nameLabel = document.createElement("span");
+    nameLabel.textContent = "Name:";
+    nameLabel.style.minWidth = "60px";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "(auto)";
+    nameInput.style.cssText = `
+      flex: 1; font: 12px "Ubuntu Mono", monospace;
+      background: #333; color: #eee; border: 1px solid #666;
+      border-radius: 3px; padding: 3px 6px;
+    `;
+
+    nameRow.append(nameLabel, nameInput);
+
+    // Subject-ID display (updates live)
+    const sidRow = document.createElement("div");
+    sidRow.style.display = "flex";
+    sidRow.style.alignItems = "center";
+    sidRow.style.gap = "6px";
+    const sidLabel = document.createElement("span");
+    sidLabel.textContent = "Subject:";
+    sidLabel.style.minWidth = "60px";
+    const sidValue = document.createElement("span");
+    sidValue.style.color = "#aaa";
+    sidValue.textContent = "—";
+    sidRow.append(sidLabel, sidValue);
+
+    // Collide button row
+    const collideRow = document.createElement("div");
+    collideRow.style.display = "flex";
+    collideRow.style.alignItems = "center";
+    collideRow.style.gap = "6px";
+    const collideLabel = document.createElement("span");
+    collideLabel.textContent = "Collide:";
+    collideLabel.style.minWidth = "60px";
+    const collideSidInput = document.createElement("input");
+    collideSidInput.type = "text";
+    collideSidInput.placeholder = "target subject";
+    collideSidInput.style.cssText = `
+      width: 80px; font: 12px "Ubuntu Mono", monospace;
+      background: #333; color: #eee; border: 1px solid #666;
+      border-radius: 3px; padding: 3px 6px;
+    `;
+    const collideBtn = this.miniBtn("Generate");
+    collideBtn.style.background = "#8e44ad";
+    collideRow.append(collideLabel, collideSidInput, collideBtn);
+
+    // Evictions input
+    const evRow = document.createElement("div");
+    evRow.style.display = "flex";
+    evRow.style.alignItems = "center";
+    evRow.style.gap = "6px";
+    const evLabel = document.createElement("span");
+    evLabel.textContent = "Evictions:";
+    evLabel.style.minWidth = "60px";
+    const evInput = document.createElement("input");
+    evInput.type = "number";
+    evInput.value = "0";
+    evInput.min = "0";
+    evInput.style.cssText = `
+      width: 60px; font: 12px "Ubuntu Mono", monospace;
+      background: #333; color: #eee; border: 1px solid #666;
+      border-radius: 3px; padding: 3px 6px;
+    `;
+    evRow.append(evLabel, evInput);
+
+    // Lage input
+    const lageRow = document.createElement("div");
+    lageRow.style.display = "flex";
+    lageRow.style.alignItems = "center";
+    lageRow.style.gap = "6px";
+    const lageLabel = document.createElement("span");
+    lageLabel.textContent = "Lage:";
+    lageLabel.style.minWidth = "60px";
+    const lageInput = document.createElement("input");
+    lageInput.type = "number";
+    lageInput.value = String(LAGE_MIN);
+    lageInput.min = String(LAGE_MIN);
+    lageInput.max = String(LAGE_MAX);
+    lageInput.style.cssText = `
+      width: 60px; font: 12px "Ubuntu Mono", monospace;
+      background: #333; color: #eee; border: 1px solid #666;
+      border-radius: 3px; padding: 3px 6px;
+    `;
+    lageRow.append(lageLabel, lageInput);
+
+    // Buttons
+    const btnRow = document.createElement("div");
+    btnRow.style.display = "flex";
+    btnRow.style.justifyContent = "flex-end";
+    btnRow.style.gap = "6px";
+    btnRow.style.marginTop = "4px";
+    const cancelBtn = this.miniBtn("Cancel");
+    cancelBtn.style.padding = "3px 12px";
+    const createBtn = this.miniBtn("Create");
+    createBtn.style.background = "#2980b9";
+    createBtn.style.padding = "3px 12px";
+    btnRow.append(cancelBtn, createBtn);
+
+    // Live subject-ID update
+    const updateSid = () => {
+      const name = nameInput.value.trim();
+      const ev = parseInt(evInput.value) || 0;
+      if (!name) {
+        sidValue.textContent = "—";
+        return;
+      }
+      const h = topicHash(name);
+      const sid = subjectId(h, ev, SUBJECT_ID_MODULUS);
+      sidValue.textContent = String(sid);
+    };
+    nameInput.addEventListener("input", updateSid);
+    evInput.addEventListener("input", updateSid);
+
+    // Collide: generate a name that maps to the target SID
+    collideBtn.addEventListener("click", () => {
+      const val = parseInt(collideSidInput.value);
+      if (isNaN(val) || val < 0) return;
+      // Use sim's findNameForSid via addTopicToNode with targetSid, but we just need the name.
+      // Brute-force here to keep it self-contained.
+      const target = val;
+      const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+      const ev = parseInt(evInput.value) || 0;
+      for (let attempt = 0; attempt < 100000; attempt++) {
+        let name = "c/";
+        for (let i = 0; i < 5; i++) name += alphabet[Math.floor(Math.random() * alphabet.length)];
+        const h = topicHash(name);
+        if (subjectId(h, ev, SUBJECT_ID_MODULUS) === target) {
+          nameInput.value = name;
+          updateSid();
+          return;
+        }
+      }
+    });
+
+    // Create action
+    const doCreate = () => {
+      const name = nameInput.value.trim() || undefined;
+      const ev = parseInt(evInput.value) || 0;
+      const lage = parseInt(lageInput.value);
+      const initEv = ev > 0 ? ev : undefined;
+      const initLage = !isNaN(lage) && lage !== LAGE_MIN ? lage : undefined;
+      this.sim.addTopicToNode(nodeId, name, undefined, initEv, initLage);
+      this.prevTopicKeys.delete(nodeId);
+      this.onUserInteraction?.();
+      dlg.remove();
+    };
+    createBtn.addEventListener("click", doCreate);
+    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doCreate(); });
+
+    cancelBtn.addEventListener("click", () => dlg.remove());
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { dlg.remove(); document.removeEventListener("keydown", esc); }
+    });
+
+    dlg.append(title, nameRow, sidRow, collideRow, evRow, lageRow, btnRow);
+    document.body.appendChild(dlg);
+    nameInput.focus();
   }
 
   private initTopicPanelResize(): void {

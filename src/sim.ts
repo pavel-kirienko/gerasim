@@ -563,7 +563,7 @@ export class Simulation {
     if (node) node.partitionSet = set;
   }
 
-  addTopicToNode(nodeId: number, name?: string, targetSid?: number): Topic | null {
+  addTopicToNode(nodeId: number, name?: string, targetSid?: number, initEvictions?: number, initLage?: number): Topic | null {
     const node = this.nodes.get(nodeId);
     if (!node) return null;
 
@@ -581,7 +581,14 @@ export class Simulation {
     const existing = node.topics.get(hash);
     if (existing) return existing;
 
-    const topic: Topic = { name, hash, evictions: 0, tsCreatedUs: this.nowUs };
+    const ev = initEvictions !== undefined ? Math.max(0, Math.floor(initEvictions)) : 0;
+    let tsCreated = this.nowUs;
+    if (initLage !== undefined) {
+      const clamped = Math.max(LAGE_MIN, Math.min(Math.floor(initLage), LAGE_MAX));
+      tsCreated = this.nowUs - pow2us(clamped) * 1_000_000;
+    }
+
+    const topic: Topic = { name, hash, evictions: ev, tsCreatedUs: tsCreated };
     nodeAddTopic(node, topic);
     this.topicAllocate(node, topic, topic.evictions, this.nowUs);
     this.gossipBegin(node);
