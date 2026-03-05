@@ -619,6 +619,35 @@ export class Simulation {
     }
   }
 
+  adjustTopicEvictions(nodeId: number, hash: bigint, delta: number): void {
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+    const topic = node.topics.get(hash);
+    if (!topic) return;
+    const newEv = Math.max(0, topic.evictions + delta);
+    if (newEv === topic.evictions) return;
+    this.topicAllocate(node, topic, newEv, this.nowUs);
+    this.pendingEvents.push({
+      timeUs: this.nowUs, event: "topic_adjust", src: nodeId, dst: null,
+      topicHash: hash, details: { name: topic.name, evictions: topic.evictions },
+    });
+  }
+
+  adjustTopicLage(nodeId: number, hash: bigint, delta: number): void {
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+    const topic = node.topics.get(hash);
+    if (!topic) return;
+    const currentLage = topicLage(topic.tsCreatedUs, this.nowUs);
+    const newLage = Math.max(LAGE_MIN, Math.min(LAGE_MAX, currentLage + delta));
+    if (newLage === currentLage) return;
+    topic.tsCreatedUs = this.nowUs - pow2us(newLage) * 1_000_000;
+    this.pendingEvents.push({
+      timeUs: this.nowUs, event: "topic_adjust", src: nodeId, dst: null,
+      topicHash: hash, details: { name: topic.name, lage: newLage },
+    });
+  }
+
   destroyTopicOnNode(nodeId: number, hash: bigint): void {
     const node = this.nodes.get(nodeId);
     if (!node) return;

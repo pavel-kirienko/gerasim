@@ -4,31 +4,18 @@
 
 import { EventRecord, NodeSnapshot } from "./types.js";
 import {
-  GOSSIP_PEER_ELIGIBLE,
   MSG_PERSIST_US, BROADCAST_PERSIST_US, CONFLICT_FLASH_US,
   PROPAGATION_SPEED,
 } from "./constants.js";
+import { Viewport } from "./viewport.js";
 
 // Colors
 const C_BG          = "#000000";
-const C_ONLINE      = "#d5e8d4";
-const C_OFFLINE     = "#555555";
-const C_CONFLICT    = "#f8cecc";
-const C_BORDER      = "#888888";
 const C_BROADCAST   = "#f1c40f"; // yellow expanding circle
 const C_UNICAST     = "#e67e22";
 const C_FORWARD     = "#9b59b6";
-const C_PEER_FRESH  = "#27ae60";
-const C_PEER_STALE  = "#95a5a6";
-const C_PEER_EMPTY  = "#666666";
-const C_TEXT        = "#ffffff";
-const C_SEPARATOR   = "#666666";
 
-const FONT_SIZE     = 11;
-const LINE_HEIGHT   = 15;
 const BOX_WIDTH     = 260;
-const BOX_PAD       = 8;
-const BOX_RADIUS    = 6;
 
 interface ActiveArrow {
   startUs: number;
@@ -48,8 +35,9 @@ export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private tooltip: HTMLElement | null = null;
+  private viewport: Viewport;
   nodePositions: Map<number, { x: number; y: number }> = new Map();
-  private nodeBoxSizes: Map<number, { w: number; h: number }> = new Map();
+  private externalBoxSizes: Map<number, { w: number; h: number }> = new Map();
   private lastSnaps: Map<number, NodeSnapshot> = new Map();
   private lastTimeUs = 0;
 
@@ -61,13 +49,27 @@ export class Renderer {
   private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
   private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }
 
-  constructor(canvas: HTMLCanvasElement, tooltip?: HTMLElement) {
+  constructor(canvas: HTMLCanvasElement, viewport: Viewport, tooltip?: HTMLElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
+    this.viewport = viewport;
     if (tooltip) {
       this.tooltip = tooltip;
       this.setupInteraction();
     }
+  }
+
+  setNodeBoxSizes(sizes: Map<number, { w: number; h: number }>): void {
+    this.externalBoxSizes = sizes;
+  }
+
+  private getBoxSize(nid: number): { w: number; h: number } {
+    return this.externalBoxSizes.get(nid) || { w: BOX_WIDTH, h: 200 };
+  }
+
+  isNodeInConflict(nid: number): boolean {
+    const until = this.activeConflicts.get(nid);
+    return until !== undefined && until >= this.lastTimeUs;
   }
 
   clearAnimations(): void {
@@ -79,15 +81,14 @@ export class Renderer {
   layoutNodes(nodeIds: number[]): void {
     const n = nodeIds.length;
     if (n === 0) return;
-    const cx = this.logicalW / 2;
-    const cy = this.logicalH / 2;
-    const radius = Math.min(cx, cy) * 0.55 + n * 15;
+    // Circumference-based radius, centered at world origin (0,0)
+    const radius = Math.max(400, n * 320 / (2 * Math.PI));
     this.nodePositions.clear();
     for (let i = 0; i < n; i++) {
       const angle = (2 * Math.PI * i) / n - Math.PI / 2;
       this.nodePositions.set(nodeIds[i], {
-        x: cx + radius * Math.cos(angle),
-        y: cy + radius * Math.sin(angle),
+        x: radius * Math.cos(angle),
+        y: radius * Math.sin(angle),
       });
     }
   }
@@ -100,12 +101,17 @@ export class Renderer {
     this.lastSnaps = snaps;
     this.lastTimeUs = timeUs;
     const ctx = this.ctx;
+    const dpr = window.devicePixelRatio || 1;
     const W = this.logicalW;
     const H = this.logicalH;
 
-    // Clear
+    // Clear with identity transform
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = C_BG;
     ctx.fillRect(0, 0, W, H);
+
+    // Apply viewport transform
+    this.viewport.applyToCanvas(ctx, dpr);
 
     // Ingest new events
     for (const ev of newEvents) {
@@ -132,161 +138,11 @@ export class Renderer {
     this.activeArrows = this.activeArrows.filter(m => m.expireUs > timeUs);
     this.activeBroadcasts = this.activeBroadcasts.filter(m => m.expireUs > timeUs);
 
-    // Compute node box sizes
-    this.nodeBoxSizes.clear();
-    for (const [nid, snap] of snaps) {
-      this.nodeBoxSizes.set(nid, this.computeBoxSize(snap));
-    }
-
     // Draw broadcast circles (behind everything)
     this.drawBroadcasts(ctx, timeUs);
 
     // Draw unicast/forward arrows (behind nodes)
     this.drawArrows(ctx, timeUs, snaps);
-
-    // Draw node boxes
-    for (const [nid, snap] of snaps) {
-      const pos = this.nodePositions.get(nid);
-      if (!pos) continue;
-      this.drawNodeBox(ctx, timeUs, pos.x, pos.y, snap);
-    }
-  }
-
-  private computeBoxSize(snap: NodeSnapshot): { w: number; h: number } {
-    let rows = 4; // header + next broadcast + next tx + last urgent
-    rows += 1;    // separator
-    rows += 1;    // topic column headers
-    rows += Math.max(snap.topics.length, 1); // topics or "(no topics)"
-    rows += 1;    // separator
-    rows += 1;    // "peers:"
-    let nPeers = 0;
-    let nEmpty = 0;
-    for (const p of snap.peers) {
-      if (p) nPeers++; else nEmpty++;
-    }
-    rows += nPeers;
-    if (nEmpty > 0) rows += 1;
-    return { w: BOX_WIDTH, h: rows * LINE_HEIGHT + BOX_PAD * 2 };
-  }
-
-  private drawNodeBox(
-    ctx: CanvasRenderingContext2D, timeUs: number,
-    cx: number, cy: number, snap: NodeSnapshot,
-  ): void {
-    const size = this.nodeBoxSizes.get(snap.nodeId)!;
-    const w = size.w, h = size.h;
-    const x = cx - w / 2, y = cy - h / 2;
-
-    // Determine fill color
-    const inConflict = this.activeConflicts.has(snap.nodeId) &&
-                       this.activeConflicts.get(snap.nodeId)! >= timeUs;
-    let bg: string;
-    if (!snap.online) bg = C_OFFLINE;
-    else if (inConflict) bg = C_CONFLICT;
-    else bg = C_ONLINE;
-
-    // Rounded rect
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, BOX_RADIUS);
-    ctx.fillStyle = bg;
-    ctx.fill();
-    if (this.highlightedNodeId === snap.nodeId) {
-      ctx.save();
-      ctx.shadowColor = "#ff00ff";
-      ctx.shadowBlur = 12;
-      ctx.strokeStyle = "#ff00ff";
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.restore();
-    } else {
-      ctx.strokeStyle = C_BORDER;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-    }
-
-    // Text content
-    const textX = x + BOX_PAD;
-    let row = 0;
-    const textColor = snap.online ? "#222222" : C_TEXT;
-
-    const putText = (text: string, opts?: { bold?: boolean; color?: string; size?: number }) => {
-      const sz = opts?.size || FONT_SIZE;
-      ctx.font = (opts?.bold ? "bold " : "") + sz + "px monospace";
-      ctx.fillStyle = opts?.color || textColor;
-      ctx.fillText(text, textX, y + BOX_PAD + row * LINE_HEIGHT + sz);
-      row++;
-    };
-
-    // Row 0: header
-    const status = snap.online ? "ONLINE" : "OFFLINE";
-    const partLabel = ` [partition ${snap.partitionSet}]`;
-    putText(`N${snap.nodeId}  ${status}${partLabel}`, { bold: true, size: 12 });
-
-    // Row 1: next broadcast
-    if (snap.online && snap.nextBroadcastUs > 0) {
-      const dt = Math.max(0, snap.nextBroadcastUs - timeUs) / 1_000_000;
-      putText(`next broadcast: ${dt.toFixed(2)}s`);
-    } else {
-      putText("next broadcast: --");
-    }
-
-    // Row 2: next topic to broadcast
-    let nextTopicName = "--";
-    const nxtH = snap.gossipUrgentFront ?? snap.gossipQueueFront;
-    if (snap.online && nxtH !== null) {
-      for (const ts of snap.topics) {
-        if (ts.hash === nxtH) { nextTopicName = ts.name; break; }
-      }
-    }
-    putText(`next tx: ${nextTopicName}`);
-
-    // Row 3: last urgent gossip
-    if (snap.online && snap.lastUrgentUs > 0) {
-      const ago = (timeUs - snap.lastUrgentUs) / 1_000_000;
-      putText(`last urgent: ${ago.toFixed(2)}s ago`);
-    } else {
-      putText("last urgent: --");
-    }
-
-    // Separator
-    putText("\u2500".repeat(32), { color: C_SEPARATOR });
-
-    // Topic table header
-    const hdrName = "topic name".padEnd(12);
-    const hdrSid = "subject".padStart(8);
-    const hdrEv = "ev".padStart(2);
-    const hdrLage = "lage".padStart(4);
-    putText(`${hdrName} ${hdrSid}  ${hdrEv} ${hdrLage}`, { bold: true });
-
-    // Topics
-    if (snap.topics.length > 0) {
-      for (const ts of snap.topics) {
-        const nm = ts.name.length > 12 ? ts.name.slice(0, 12) : ts.name.padEnd(12);
-        const sid = String(ts.subjectId).padStart(8);
-        const ev = String(ts.evictions).padStart(2);
-        const lage = String(ts.lage).padStart(4);
-        putText(`${nm} ${sid}  ${ev} ${lage}`);
-      }
-    } else {
-      putText("(no topics)", { color: C_PEER_EMPTY });
-    }
-
-    // Separator
-    putText("\u2500".repeat(32), { color: C_SEPARATOR });
-
-    // Peers
-    putText("peers:", { bold: true });
-    let nEmpty = 0;
-    for (const p of snap.peers) {
-      if (p === null) { nEmpty++; continue; }
-      const age = (timeUs - p.lastSeenUs) / 1_000_000;
-      const fresh = (timeUs - p.lastSeenUs) < GOSSIP_PEER_ELIGIBLE;
-      const c = fresh ? C_PEER_FRESH : C_PEER_STALE;
-      putText(`  N${p.nodeId} ${age.toFixed(1)}s ago`, { color: c });
-    }
-    if (nEmpty > 0) {
-      putText(`  (${nEmpty} empty)`, { color: C_PEER_EMPTY });
-    }
   }
 
   // -- Info box helper --
@@ -362,7 +218,7 @@ export class Renderer {
         `${bName}  S=${bSid}`,
         `ev=${bEv}  lage=${bLage}`,
       ];
-      const srcBox = this.nodeBoxSizes.get(bc.src) || { w: BOX_WIDTH, h: 100 };
+      const srcBox = this.getBoxSize(bc.src);
       this.drawInfoBox(ctx, srcPos.x + srcBox.w / 2 + 10, srcPos.y - 20, infoLines, C_BROADCAST, alpha);
     }
   }
@@ -389,8 +245,8 @@ export class Renderer {
       const dstPos = this.nodePositions.get(ev.dst);
       if (!dstPos) continue;
 
-      const srcBox = this.nodeBoxSizes.get(ev.src) || { w: BOX_WIDTH, h: 100 };
-      const dstBox = this.nodeBoxSizes.get(ev.dst) || { w: BOX_WIDTH, h: 100 };
+      const srcBox = this.getBoxSize(ev.src);
+      const dstBox = this.getBoxSize(ev.dst);
       const [x0, y0] = this.edgePoint(srcPos.x, srcPos.y, srcBox.w, srcBox.h, dstPos.x, dstPos.y);
       const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
 
@@ -566,40 +422,25 @@ export class Renderer {
   private handleHover(mx: number, my: number): void {
     if (!this.tooltip) return;
 
+    // Convert screen coords to world coords for hit-testing
+    const world = this.viewport.screenToWorld(mx, my);
+    const wx = world.x, wy = world.y;
+
     // Hit-test arrows (highest priority — small targets)
-    const arrow = this.hitTestArrow(mx, my);
+    const arrow = this.hitTestArrow(wx, wy);
     if (arrow) {
       this.showTooltip(mx, my, this.formatArrow(arrow));
       return;
     }
 
     // Hit-test broadcast circles
-    const bc = this.hitTestBroadcast(mx, my);
+    const bc = this.hitTestBroadcast(wx, wy);
     if (bc) {
       this.showTooltip(mx, my, this.formatBroadcast(bc));
       return;
     }
 
-    // Hit-test node boxes
-    const node = this.hitTestNode(mx, my);
-    if (node) {
-      this.showTooltip(mx, my, this.formatNode(node));
-      return;
-    }
-
     this.tooltip.style.display = "none";
-  }
-
-  private hitTestNode(mx: number, my: number): NodeSnapshot | null {
-    for (const [nid, pos] of this.nodePositions) {
-      const size = this.nodeBoxSizes.get(nid);
-      if (!size) continue;
-      const x0 = pos.x - size.w / 2, y0 = pos.y - size.h / 2;
-      if (mx >= x0 && mx <= x0 + size.w && my >= y0 && my <= y0 + size.h) {
-        return this.lastSnaps.get(nid) ?? null;
-      }
-    }
-    return null;
   }
 
   private hitTestArrow(mx: number, my: number): ActiveArrow | null {
@@ -611,8 +452,8 @@ export class Renderer {
       const dstPos = this.nodePositions.get(ev.dst);
       if (!dstPos) continue;
 
-      const srcBox = this.nodeBoxSizes.get(ev.src) || { w: BOX_WIDTH, h: 100 };
-      const dstBox = this.nodeBoxSizes.get(ev.dst) || { w: BOX_WIDTH, h: 100 };
+      const srcBox = this.getBoxSize(ev.src);
+      const dstBox = this.getBoxSize(ev.dst);
       const [x0, y0] = this.edgePoint(srcPos.x, srcPos.y, srcBox.w, srcBox.h, dstPos.x, dstPos.y);
       const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
 
@@ -686,23 +527,6 @@ export class Renderer {
     if (d.subjectId !== undefined) lines.push(`Subject: ${d.subjectId}`);
     if (d.evictions !== undefined) lines.push(`Evictions: ${d.evictions}`);
     if (d.lage !== undefined) lines.push(`Lage: ${d.lage}`);
-    return lines.join("\n");
-  }
-
-  private formatNode(snap: NodeSnapshot): string {
-    const status = snap.online ? "ONLINE" : "OFFLINE";
-    const lines = [`N${snap.nodeId}  ${status}  [partition ${snap.partitionSet}]`];
-    if (snap.topics.length > 0) {
-      lines.push(`Topics (${snap.topics.length}):`);
-      for (const t of snap.topics) {
-        lines.push(`  ${t.name}  S=${t.subjectId} ev=${t.evictions} lage=${t.lage}`);
-      }
-    } else {
-      lines.push("No topics");
-    }
-    const nPeers = snap.peers.filter(p => p !== null).length;
-    const nEmpty = snap.peers.length - nPeers;
-    lines.push(`Peers: ${nPeers} active, ${nEmpty} empty`);
     return lines.join("\n");
   }
 

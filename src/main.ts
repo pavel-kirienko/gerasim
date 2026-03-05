@@ -8,6 +8,7 @@ import { Renderer } from "./render.js";
 import { UI } from "./ui.js";
 import { EventLog } from "./event-log.js";
 import { Timeline } from "./timeline.js";
+import { Viewport } from "./viewport.js";
 
 const INITIAL_NODES = 6;
 const STEP_US = 1_000; // 1ms sim time per step
@@ -16,6 +17,7 @@ const MAX_BUDGET_US = 1_000_000; // cap budget to 1s sim time per frame
 let sim: Simulation;
 let renderer: Renderer;
 let ui: UI;
+let viewport: Viewport;
 let canvas: HTMLCanvasElement;
 let ctx: CanvasRenderingContext2D;
 let lastWallTime: number | null = null;
@@ -71,6 +73,18 @@ function relayout(): void {
   renderer.layoutNodes(ids);
   sim.setNodePositions(renderer.nodePositions);
   timeline.setNodeIds(ids);
+  zoomToFit();
+}
+
+function zoomToFit(): void {
+  const container = canvas.parentElement!;
+  viewport.zoomToFit(
+    renderer.nodePositions,
+    new Map(),
+    container.clientWidth,
+    container.clientHeight,
+  );
+  viewport.applyToWrapper();
 }
 
 function resizeCanvas(): void {
@@ -85,6 +99,7 @@ function resizeCanvas(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   timeline.resize();
   relayout();
+  viewport.applyToWrapper();
 }
 
 function saveSnapshot(events?: EventRecord[]): void {
@@ -182,19 +197,25 @@ function init(): void {
   const topBar = document.getElementById("top-bar")!;
   const sidePanel = document.getElementById("side-panel")!;
   const overlayContainer = document.getElementById("overlay-container")!;
+  const worldWrapper = document.getElementById("world-wrapper")!;
   const timelineCanvas = document.getElementById("timeline-canvas") as HTMLCanvasElement;
   const timelineTooltip = document.getElementById("timeline-tooltip")!;
+  const canvasContainer = document.getElementById("canvas-container")!;
 
   const simTooltip = document.getElementById("sim-tooltip")!;
   sim = createSim();
-  renderer = new Renderer(canvas, simTooltip);
+  viewport = new Viewport();
+  viewport.setWrapper(worldWrapper);
+  viewport.attach(canvasContainer);
+  renderer = new Renderer(canvas, viewport, simTooltip);
   eventLog = new EventLog();
   timeline = new Timeline(timelineCanvas, timelineTooltip, eventLog);
   const topicPanel = document.getElementById("topic-panel")!;
-  ui = new UI(sim, renderer, topBar, sidePanel, overlayContainer, topicPanel);
+  ui = new UI(sim, renderer, viewport, topBar, sidePanel, overlayContainer, topicPanel);
 
   ui.onRelayout = relayout;
   ui.onApplySeed = resetWithSeed;
+  ui.onFitView = zoomToFit;
   ui.onUserInteraction = () => {
     const pendingEvents = sim.drainPendingEvents();
     saveSnapshot(pendingEvents);

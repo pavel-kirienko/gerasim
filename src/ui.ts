@@ -6,6 +6,8 @@ import { NodeSnapshot, TopicSnap } from "./types.js";
 import { Simulation, topicHash, subjectId } from "./sim.js";
 import { SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX } from "./constants.js";
 import { Renderer } from "./render.js";
+import { Viewport } from "./viewport.js";
+import { NodeBlock, NodeBlockCallbacks } from "./node-block.js";
 
 // Colors for legend
 const C_ONLINE    = "#d5e8d4";
@@ -22,10 +24,9 @@ const C_DIVERGED  = "#c0392b";
 export class UI {
   private sim: Simulation;
   private renderer: Renderer;
+  private viewport: Viewport;
   private overlayContainer: HTMLElement;
-  private overlays: Map<number, HTMLElement> = new Map();
-  // Track previous topic hashes per node to avoid rebuilding buttons every frame
-  private prevTopicKeys: Map<number, string> = new Map();
+  private nodeBlocks: Map<number, NodeBlock> = new Map();
 
   // Topic panel
   private topicPanel: HTMLElement;
@@ -49,10 +50,12 @@ export class UI {
   onRelayout: (() => void) | null = null;
   onApplySeed: ((seed: number) => void) | null = null;
   onUserInteraction: (() => void) | null = null;
+  onFitView: (() => void) | null = null;
 
   constructor(
     sim: Simulation,
     renderer: Renderer,
+    viewport: Viewport,
     topBar: HTMLElement,
     sidePanel: HTMLElement,
     overlayContainer: HTMLElement,
@@ -60,6 +63,7 @@ export class UI {
   ) {
     this.sim = sim;
     this.renderer = renderer;
+    this.viewport = viewport;
     this.overlayContainer = overlayContainer;
     this.topicPanel = topicPanel;
     this.buildTopBar(topBar);
@@ -87,12 +91,11 @@ export class UI {
     }
   }
 
-  /** Replace the simulation reference (used on seed reset). Clears all overlays. */
+  /** Replace the simulation reference (used on seed reset). Clears all node blocks. */
   setSim(sim: Simulation): void {
     this.sim = sim;
-    for (const el of this.overlays.values()) el.remove();
-    this.overlays.clear();
-    this.prevTopicKeys.clear();
+    for (const block of this.nodeBlocks.values()) block.el.remove();
+    this.nodeBlocks.clear();
     this.topicCacheKey = "";
     const table = this.topicPanel.querySelector("table");
     if (table) table.remove();
@@ -228,11 +231,14 @@ export class UI {
     const seedGroup = document.createElement("span");
     seedGroup.append(seedLabel, this.seedInput, applyBtn);
 
+    const fitBtn = this.btn("Zoom to Fit", "Fit");
+    fitBtn.addEventListener("click", () => this.onFitView?.());
+
     bar.append(
       this.playBtn,
       this.sep(), speedGroup,
       this.sep(), lossGroup,
-      this.sep(), this.addNodeBtn,
+      this.sep(), this.addNodeBtn, fitBtn,
       this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay,
       this.sep(), seedGroup,
     );
@@ -326,144 +332,90 @@ export class UI {
     // Update topic view table
     this.updateTopicView(snaps);
 
-    // Update per-node overlays
-    this.syncOverlays(snaps);
+    // Update per-node blocks
+    this.syncOverlays(snaps, timeUs);
   }
 
-  private syncOverlays(snaps: Map<number, NodeSnapshot>): void {
-    // Remove overlays for destroyed nodes
-    for (const [nid, el] of this.overlays) {
+  private syncOverlays(snaps: Map<number, NodeSnapshot>, timeUs: number): void {
+    // Remove blocks for destroyed nodes
+    for (const [nid, block] of this.nodeBlocks) {
       if (!snaps.has(nid)) {
-        el.remove();
-        this.overlays.delete(nid);
-        this.prevTopicKeys.delete(nid);
+        block.el.remove();
+        this.nodeBlocks.delete(nid);
       }
     }
 
-    // Create or update overlays
+    const boxSizes = new Map<number, { w: number; h: number }>();
+    const minimal = this.viewport.currentZoom < 0.8;
+
+    // Create or update blocks
     for (const [nid, snap] of snaps) {
       const pos = this.renderer.nodePositions.get(nid);
       if (!pos) continue;
 
-      let el = this.overlays.get(nid);
-      if (!el) {
-        el = this.createOverlay(nid);
-        this.overlayContainer.appendChild(el);
-        this.overlays.set(nid, el);
+      let block = this.nodeBlocks.get(nid);
+      if (!block) {
+        block = this.createNodeBlock(nid);
+        this.overlayContainer.appendChild(block.el);
+        this.nodeBlocks.set(nid, block);
       }
 
-      // Position below the node box
-      const boxH = 200; // approximate
-      el.style.left = (pos.x - 130) + "px";
-      el.style.top = (pos.y + boxH / 2 + 4) + "px";
-
-      // Update partition button
-      const partBtn = el.querySelector(".part-btn") as HTMLButtonElement;
-      if (partBtn) {
-        partBtn.textContent = `partition ${snap.partitionSet}`;
-        partBtn.style.background = snap.partitionSet === "A" ? "#3498db" : "#e67e22";
-      }
-
-      // Only rebuild topic buttons if topic list changed
-      const key = snap.topics.map(t => t.hash.toString(36) + ":" + t.evictions).join(",");
-      if (this.prevTopicKeys.get(nid) !== key) {
-        this.prevTopicKeys.set(nid, key);
-        this.rebuildTopicButtons(el, nid, snap);
-      }
+      block.setMinimalMode(minimal);
+      block.update(snap, timeUs, this.renderer.isNodeInConflict(nid));
+      block.setPosition(pos.x, pos.y);
+      boxSizes.set(nid, block.getSize());
     }
+
+    this.renderer.setNodeBoxSizes(boxSizes);
   }
 
-  private createOverlay(nodeId: number): HTMLElement {
-    const el = document.createElement("div");
-    el.className = "node-overlay";
-    el.style.position = "absolute";
-    el.style.display = "flex";
-    el.style.gap = "3px";
-    el.style.flexWrap = "wrap";
-    el.style.maxWidth = "260px";
-    el.style.justifyContent = "center";
-
-    const partBtn = this.miniBtn("partition A", "part-btn");
-    partBtn.style.background = "#3498db";
-    partBtn.addEventListener("click", () => {
-      const node = this.sim.nodes.get(nodeId);
-      if (node) {
-        const newSet = node.partitionSet === "A" ? "B" : "A";
-        this.sim.setPartition(nodeId, newSet);
+  private createNodeBlock(nodeId: number): NodeBlock {
+    const callbacks: NodeBlockCallbacks = {
+      onPartitionToggle: (nid) => {
+        const node = this.sim.nodes.get(nid);
+        if (node) {
+          const newSet = node.partitionSet === "A" ? "B" : "A";
+          this.sim.setPartition(nid, newSet);
+          this.onUserInteraction?.();
+        }
+      },
+      onRestart: (nid) => {
+        this.sim.restartNode(nid);
         this.onUserInteraction?.();
-      }
-    });
-
-    const restartBtn = this.miniBtn("Restart");
-    restartBtn.addEventListener("click", () => {
-      this.sim.restartNode(nodeId);
-      this.onUserInteraction?.();
-    });
-
-    const destroyBtn = this.miniBtn("Destroy");
-    destroyBtn.style.background = "#c0392b";
-    destroyBtn.addEventListener("click", () => {
-      this.sim.destroyNode(nodeId);
-      el.remove();
-      this.overlays.delete(nodeId);
-      this.prevTopicKeys.delete(nodeId);
-      this.onRelayout?.();
-      this.onUserInteraction?.();
-    });
-
-    const addTopicBtn = this.miniBtn("+Topic");
-    addTopicBtn.style.background = "#2980b9";
-    addTopicBtn.addEventListener("click", () => {
-      this.openTopicDialog(nodeId);
-    });
-
-    const topicContainer = document.createElement("div");
-    topicContainer.className = "topic-btns";
-    topicContainer.style.display = "flex";
-    topicContainer.style.gap = "2px";
-    topicContainer.style.flexWrap = "wrap";
-    topicContainer.style.width = "100%";
-    topicContainer.style.justifyContent = "center";
-
-    el.append(partBtn, restartBtn, destroyBtn, addTopicBtn, topicContainer);
-    return el;
-  }
-
-  /** Rebuild topic buttons — only called when topic list actually changes. */
-  private rebuildTopicButtons(el: HTMLElement, nodeId: number, snap: NodeSnapshot): void {
-    const container = el.querySelector(".topic-btns")!;
-    container.innerHTML = "";
-    for (const t of snap.topics) {
-      const row = document.createElement("span");
-      row.style.display = "inline-flex";
-      row.style.gap = "1px";
-
-      // Topic name button — click to copy name to clipboard
-      const nameBtn = this.miniBtn(t.name.length > 10 ? t.name.slice(0, 10) : t.name);
-      nameBtn.style.background = "#34495e";
-      nameBtn.title = `Click to copy: ${t.name}`;
-      nameBtn.addEventListener("click", () => {
-        navigator.clipboard.writeText(t.name);
-        nameBtn.textContent = "copied!";
-        setTimeout(() => {
-          nameBtn.textContent = t.name.length > 10 ? t.name.slice(0, 10) : t.name;
-        }, 800);
-      });
-
-      // Remove button
-      const rmBtn = this.miniBtn("\u00d7");
-      rmBtn.style.background = "#7f8c8d";
-      rmBtn.style.fontSize = "9px";
-      rmBtn.title = `Remove ${t.name}`;
-      rmBtn.addEventListener("click", () => {
-        this.sim.destroyTopicOnNode(nodeId, t.hash);
-        this.prevTopicKeys.delete(nodeId); // force rebuild next frame
+      },
+      onDestroy: (nid) => {
+        this.sim.destroyNode(nid);
+        const block = this.nodeBlocks.get(nid);
+        if (block) {
+          block.el.remove();
+          this.nodeBlocks.delete(nid);
+        }
+        this.onRelayout?.();
         this.onUserInteraction?.();
-      });
-
-      row.append(nameBtn, rmBtn);
-      container.appendChild(row);
-    }
+      },
+      onAddTopic: (nid) => {
+        this.openTopicDialog(nid);
+      },
+      onDeleteTopic: (nid, hash) => {
+        this.sim.destroyTopicOnNode(nid, hash);
+        this.onUserInteraction?.();
+      },
+      onChangeEvictions: (nid, hash, delta) => {
+        this.sim.adjustTopicEvictions(nid, hash, delta);
+        this.onUserInteraction?.();
+      },
+      onChangeLage: (nid, hash, delta) => {
+        this.sim.adjustTopicLage(nid, hash, delta);
+        this.onUserInteraction?.();
+      },
+      onDragMove: (nid, dx, dy) => {
+        const pos = this.renderer.nodePositions.get(nid);
+        if (!pos) return;
+        pos.x += dx / this.viewport.currentZoom;
+        pos.y += dy / this.viewport.currentZoom;
+      },
+    };
+    return new NodeBlock(nodeId, callbacks);
   }
 
   private openTopicDialog(nodeId: number): void {
@@ -634,7 +586,6 @@ export class UI {
       const initEv = ev > 0 ? ev : undefined;
       const initLage = !isNaN(lage) && lage !== LAGE_MIN ? lage : undefined;
       this.sim.addTopicToNode(nodeId, name, undefined, initEv, initLage);
-      this.prevTopicKeys.delete(nodeId);
       this.onUserInteraction?.();
       dlg.remove();
     };

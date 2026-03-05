@@ -48,15 +48,151 @@
     display: block;
   }
 
+  #world-wrapper {
+    position: absolute;
+    top: 0; left: 0;
+    width: 0; height: 0;
+    transform-origin: 0 0;
+    pointer-events: none;
+  }
   #overlay-container {
     position: absolute;
     top: 0; left: 0;
-    width: 100%; height: 100%;
+    width: 0; height: 0;
     pointer-events: none;
   }
   #overlay-container > * {
     pointer-events: auto;
   }
+
+  /* Node blocks */
+  .node-block {
+    position: absolute;
+    width: 260px;
+    background: #2a2a2a;
+    border: 1px solid #555;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 10px;
+    pointer-events: auto;
+    user-select: none;
+  }
+  .node-block.minimal .nb-status,
+  .node-block.minimal .nb-topics,
+  .node-block.minimal .nb-peers,
+  .node-block.minimal .nb-resize,
+  .node-block.minimal .nb-header button:not(.nb-part-btn) {
+    display: none !important;
+  }
+  .node-block.minimal {
+    width: auto;
+    min-width: 60px;
+  }
+  .node-block.minimal .nb-header {
+    padding: 3px 6px;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    border-radius: 5px;
+  }
+
+  .nb-header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    background: #333;
+    border-radius: 5px 5px 0 0;
+    cursor: grab;
+    flex-wrap: wrap;
+  }
+  .nb-header button {
+    padding: 1px 5px;
+    cursor: pointer;
+    font: 9px "Ubuntu Mono", monospace;
+    border: 1px solid #666;
+    border-radius: 3px;
+    color: #eee;
+    background: #555;
+  }
+  .nb-header button:hover { filter: brightness(1.3); }
+  .nb-part-btn { font-weight: bold; min-width: 18px; }
+  .nb-destroy { background: #c0392b !important; }
+  .nb-add-topic { background: #2980b9 !important; }
+
+  .nb-status {
+    padding: 2px 6px;
+    font-size: 9px;
+    color: #aaa;
+    border-bottom: 1px solid #444;
+  }
+
+  .nb-topics {
+    max-height: 120px;
+    overflow-y: auto;
+  }
+  .nb-topics table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9px;
+  }
+  .nb-topics th {
+    background: #333;
+    padding: 1px 3px;
+    text-align: center;
+    font-weight: bold;
+    border-bottom: 1px solid #555;
+    position: sticky;
+    top: 0;
+  }
+  .nb-topics td {
+    padding: 1px 3px;
+    text-align: center;
+    white-space: nowrap;
+    border-bottom: 1px solid #333;
+  }
+  .nb-topics td:first-child {
+    text-align: left;
+    max-width: 70px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nb-ev-cell, .nb-lage-cell {
+    white-space: nowrap;
+  }
+  .nb-inline-btn {
+    padding: 0 3px;
+    cursor: pointer;
+    font: 9px "Ubuntu Mono", monospace;
+    background: #444;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 2px;
+    line-height: 1;
+    vertical-align: middle;
+  }
+  .nb-inline-btn:hover { background: #666; }
+
+  .nb-peers {
+    border-top: 1px solid #444;
+  }
+  .nb-peers table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8px;
+  }
+  .nb-peers td {
+    padding: 1px 2px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .nb-resize {
+    height: 5px;
+    cursor: ns-resize;
+    background: transparent;
+    border-top: 1px solid #444;
+  }
+  .nb-resize:hover { background: #555; }
 
   #topic-panel {
     width: 420px;
@@ -142,7 +278,9 @@
     <div id="topic-panel"><div id="topic-resize"></div></div>
     <div id="canvas-container">
       <canvas id="sim-canvas"></canvas>
-      <div id="overlay-container"></div>
+      <div id="world-wrapper">
+        <div id="overlay-container"></div>
+      </div>
       <div id="sim-tooltip"></div>
     </div>
     <div id="side-panel"></div>
