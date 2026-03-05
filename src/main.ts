@@ -30,6 +30,11 @@ let historyTimes: number[] = [];
 let eventLog: EventLog;
 let timeline: Timeline;
 
+function sharedTopicName(index: number): string {
+  const letter = String.fromCharCode(97 + (index % 26));
+  return index < 26 ? "topic/" + letter : "topic/" + letter + Math.floor(index / 26);
+}
+
 function createSim(seed?: number): Simulation {
   if (seed === undefined) {
     seed = Math.random() * 0xFFFFFFFF | 0;
@@ -42,6 +47,22 @@ function createSim(seed?: number): Simulation {
   for (let i = 0; i < INITIAL_NODES; i++) {
     s.addNode(i);
   }
+  // Default topic config: overlapping topics between adjacent node pairs
+  for (let i = 0; i < INITIAL_NODES; i++) {
+    const name = sharedTopicName(i);
+    s.addTopicToNode(i, name);
+    s.addTopicToNode((i + 1) % INITIAL_NODES, name);
+  }
+  // Even nodes: colliding topics on subject 10000
+  for (let i = 0; i < INITIAL_NODES; i += 2) {
+    s.addTopicToNode(i, undefined, 10000);
+  }
+  // Odd nodes: colliding topics on subject 10001
+  for (let i = 1; i < INITIAL_NODES; i += 2) {
+    s.addTopicToNode(i, undefined, 10001);
+  }
+  // Clear initialization events — they're not interesting for the timeline
+  s.pendingEvents.length = 0;
   return s;
 }
 
