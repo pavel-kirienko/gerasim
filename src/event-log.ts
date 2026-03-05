@@ -4,7 +4,7 @@
 
 import { EventRecord, TimelineCode, TimelineEvent } from "./types.js";
 
-function mapCode(rec: EventRecord): TimelineCode {
+export function mapCode(rec: EventRecord): TimelineCode {
   switch (rec.event) {
     case "broadcast": return "GB";
     case "unicast":   return "GU";

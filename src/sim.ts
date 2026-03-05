@@ -18,7 +18,7 @@ import {
 // Seeded RNG — Mulberry32
 // ---------------------------------------------------------------------------
 
-class Rng {
+export class Rng {
   private state: number;
 
   constructor(seed: number) {
@@ -52,14 +52,14 @@ class Rng {
 // Priority queue (min-heap) for events
 // ---------------------------------------------------------------------------
 
-interface SimEvent {
+export interface SimEvent {
   timeUs: number;
   seq: number;
   type: string;
   payload: Record<string, unknown>;
 }
 
-class MinHeap {
+export class MinHeap {
   private data: SimEvent[] = [];
 
   get length(): number { return this.data.length; }
@@ -176,7 +176,7 @@ export function topicHash(name: string): bigint {
 // Node helpers
 // ---------------------------------------------------------------------------
 
-function makeNode(nodeId: number): Node {
+export function makeNode(nodeId: number): Node {
   const dedup: DedupEntry[] = [];
   for (let i = 0; i < GOSSIP_DEDUP_CAP; i++) {
     dedup.push({ hash: 0n, lastSeenUs: 0 });
@@ -198,14 +198,14 @@ function makeNode(nodeId: number): Node {
   };
 }
 
-function nodeAddTopic(node: Node, topic: Topic): void {
+export function nodeAddTopic(node: Node, topic: Topic): void {
   node.topics.set(topic.hash, topic);
   if (!node.gossipQueue.includes(topic.hash)) {
     node.gossipQueue.push(topic.hash);
   }
 }
 
-function nodeFindBySubjectId(node: Node, sid: number): Topic | null {
+export function nodeFindBySubjectId(node: Node, sid: number): Topic | null {
   for (const t of node.topics.values()) {
     if (topicSubjectId(t) === sid) return t;
   }
