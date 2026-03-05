@@ -543,9 +543,18 @@ export class Simulation {
     const node = this.nodes.get(nodeId);
     if (!node) return;
     node.online = false;
-    node.topics.clear();
+    // Keep topics but reset lage and evictions
+    for (const t of node.topics.values()) {
+      t.evictions = 0;
+      t.tsCreatedUs = this.nowUs; // lage will compute to -1
+    }
     node.gossipQueue.length = 0;
     node.gossipUrgent.length = 0;
+    // Re-enqueue all topics for gossip and re-allocate subject IDs
+    for (const t of node.topics.values()) {
+      node.gossipQueue.push(t.hash);
+      this.topicAllocate(node, t, 0, this.nowUs);
+    }
     for (let i = 0; i < node.peers.length; i++) node.peers[i] = null;
     for (const d of node.dedup) {
       d.hash = 0n;
