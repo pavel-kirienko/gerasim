@@ -3,26 +3,34 @@
 // ---------------------------------------------------------------------------
 
 import { NetworkConfig } from "./types.js";
-import { Simulation } from "./sim.js";
+import { Simulation, SimState } from "./sim.js";
 import { Renderer } from "./render.js";
 import { UI } from "./ui.js";
 
 const INITIAL_NODES = 6;
-const STEP_US = 3_000_000; // 3s sim time per manual step
-const MAX_SIM_DT_US = 1_000_000; // cap per frame to prevent freeze
+const STEP_US = 1_000; // 1ms sim time per step
+const MAX_BUDGET_US = 1_000_000; // cap budget to 1s sim time per frame
 
 let sim: Simulation;
 let renderer: Renderer;
 let ui: UI;
 let canvas: HTMLCanvasElement;
 let lastWallTime: number | null = null;
+let simTimeBudget = 0;
 
-function createSim(): Simulation {
+// History
+let history: SimState[] = [];
+let historyIndex = -1; // -1 = no snapshots yet
+
+function createSim(seed?: number): Simulation {
+  if (seed === undefined) {
+    seed = Math.random() * 0xFFFFFFFF | 0;
+  }
   const net: NetworkConfig = {
     delayUs: [1_000, 10_000],
     lossProbability: 0.0,
   };
-  const s = new Simulation(net, 42);
+  const s = new Simulation(net, seed);
   for (let i = 0; i < INITIAL_NODES; i++) {
     s.addNode(i);
   }
@@ -42,18 +50,58 @@ function resizeCanvas(): void {
   relayout();
 }
 
-function rewind(): void {
-  sim = createSim();
-  ui.setSim(sim);
-  lastWallTime = null;
-  relayout();
+function saveSnapshot(): void {
+  // Truncate future history if navigated back
+  if (historyIndex < history.length - 1) {
+    history.length = historyIndex + 1;
+  }
+  history.push(sim.saveState());
+  historyIndex = history.length - 1;
 }
 
-function doStep(): void {
+/** Single 10ms step. Returns true if events occurred (snapshot saved). */
+function doStep(): boolean {
   const newEvents = sim.stepUntil(sim.nowUs + STEP_US);
+  if (newEvents.length > 0) {
+    saveSnapshot();
+    renderCurrent(newEvents);
+    return true;
+  }
+  renderCurrent([]);
+  return false;
+}
+
+/** Step until next event occurs (for Step button). */
+function doStepToNextEvent(): void {
+  const maxUs = sim.nowUs + MAX_BUDGET_US;
+  while (sim.nowUs < maxUs) {
+    if (doStep()) return;
+  }
+}
+
+function renderCurrent(events: import("./types.js").EventRecord[] = []): void {
   const snaps = sim.snapshot();
-  renderer.render(sim.nowUs, snaps, newEvents);
-  ui.updateFrame(sim.nowUs, snaps);
+  renderer.render(sim.nowUs, snaps, events);
+  ui.updateFrame(sim.nowUs, snaps, historyIndex + 1, history.length);
+}
+
+function navigateTo(index: number): void {
+  if (index < 0 || index >= history.length) return;
+  sim.loadState(history[index]);
+  historyIndex = index;
+  renderer.clearAnimations();
+  renderCurrent();
+}
+
+function resetWithSeed(seed: number): void {
+  sim = createSim(seed);
+  ui.setSim(sim);
+  history = [];
+  historyIndex = -1;
+  lastWallTime = null;
+  simTimeBudget = 0;
+  relayout();
+  renderCurrent();
 }
 
 function tick(wallTime: number): void {
@@ -62,14 +110,17 @@ function tick(wallTime: number): void {
   lastWallTime = wallTime;
 
   if (ui.playing) {
-    let simDtUs = wallDtMs * 1000 * ui.speedMultiplier;
-    if (simDtUs > MAX_SIM_DT_US) simDtUs = MAX_SIM_DT_US;
-    if (simDtUs < 0) simDtUs = 0;
+    simTimeBudget += wallDtMs * 1000 * ui.speedMultiplier;
+    if (simTimeBudget > MAX_BUDGET_US) simTimeBudget = MAX_BUDGET_US;
+    if (simTimeBudget < 0) simTimeBudget = 0;
 
-    const newEvents = sim.stepUntil(sim.nowUs + simDtUs);
-    const snaps = sim.snapshot();
-    renderer.render(sim.nowUs, snaps, newEvents);
-    ui.updateFrame(sim.nowUs, snaps);
+    while (simTimeBudget >= STEP_US) {
+      doStep();
+      simTimeBudget -= STEP_US;
+    }
+  } else {
+    // Always render when paused so UI interactions are visible
+    renderCurrent();
   }
 
   requestAnimationFrame(tick);
@@ -85,13 +136,17 @@ function init(): void {
   renderer = new Renderer(canvas);
   ui = new UI(sim, renderer, topBar, sidePanel, overlayContainer);
 
-  ui.onRewind = rewind;
   ui.onRelayout = relayout;
-  ui.onStepCallback = doStep;
+  ui.onStepCallback = doStepToNextEvent;
+  ui.onNavigate = navigateTo;
+  ui.onApplySeed = resetWithSeed;
+  ui.onUserInteraction = () => { saveSnapshot(); renderCurrent(); };
+  ui.setSeedDisplay(sim.seed);
 
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
+  renderCurrent();
   requestAnimationFrame(tick);
 }
 

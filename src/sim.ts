@@ -25,6 +25,9 @@ class Rng {
     this.state = seed | 0;
   }
 
+  getState(): number { return this.state; }
+  setState(s: number): void { this.state = s; }
+
   random(): number {
     let t = (this.state += 0x6D2B79F5);
     t = Math.imul(t ^ (t >>> 15), t | 1);
@@ -80,6 +83,16 @@ class MinHeap {
 
   peek(): SimEvent | undefined {
     return this.data[0];
+  }
+
+  toArray(): SimEvent[] {
+    return this.data.slice();
+  }
+
+  static fromArray(data: SimEvent[]): MinHeap {
+    const h = new MinHeap();
+    h.data = data.slice();
+    return h;
   }
 
   private less(a: SimEvent, b: SimEvent): boolean {
@@ -203,6 +216,17 @@ function nodeFindBySubjectId(node: Node, sid: number): Topic | null {
 // Simulation class
 // ---------------------------------------------------------------------------
 
+export interface SimState {
+  nowUs: number;
+  seq: number;
+  nextAutoId: number;
+  nextAutoTopicChar: number;
+  rngState: number;
+  eventCounts: Record<string, number>;
+  nodes: Map<number, Node>;
+  queueData: SimEvent[];
+}
+
 export class Simulation {
   net: NetworkConfig;
   rng: Rng;
@@ -214,7 +238,7 @@ export class Simulation {
   private seq = 0;
   private nextAutoId = 0;
   private nextAutoTopicChar = 97; // 'a'
-  private seed: number;
+  readonly seed: number;
 
   // Cumulative event log (for event counts in the UI)
   eventCounts: Record<string, number> = {};
@@ -223,6 +247,82 @@ export class Simulation {
     this.net = net;
     this.seed = rngSeed;
     this.rng = new Rng(rngSeed);
+  }
+
+  saveState(): SimState {
+    const cloneNode = (n: Node): Node => {
+      const topics = new Map<bigint, Topic>();
+      for (const [h, t] of n.topics) {
+        topics.set(h, { ...t });
+      }
+      return {
+        nodeId: n.nodeId,
+        online: n.online,
+        topics,
+        gossipQueue: n.gossipQueue.slice(),
+        gossipUrgent: n.gossipUrgent.slice(),
+        peers: n.peers.map(p => p ? { ...p } : null),
+        dedup: n.dedup.map(d => ({ ...d })),
+        nextBroadcastUs: n.nextBroadcastUs,
+        partitionSet: n.partitionSet,
+        peerReplacementMoratoriumUntil: n.peerReplacementMoratoriumUntil,
+        lastUrgentUs: n.lastUrgentUs,
+      };
+    };
+    const nodes = new Map<number, Node>();
+    for (const [id, n] of this.nodes) {
+      nodes.set(id, cloneNode(n));
+    }
+    const queueData = this.queue.toArray().map(ev => ({
+      ...ev,
+      payload: { ...ev.payload },
+    }));
+    return {
+      nowUs: this.nowUs,
+      seq: this.seq,
+      nextAutoId: this.nextAutoId,
+      nextAutoTopicChar: this.nextAutoTopicChar,
+      rngState: this.rng.getState(),
+      eventCounts: { ...this.eventCounts },
+      nodes,
+      queueData,
+    };
+  }
+
+  loadState(state: SimState): void {
+    this.nowUs = state.nowUs;
+    this.seq = state.seq;
+    this.nextAutoId = state.nextAutoId;
+    this.nextAutoTopicChar = state.nextAutoTopicChar;
+    this.rng.setState(state.rngState);
+    this.eventCounts = { ...state.eventCounts };
+    // Deep clone nodes
+    this.nodes.clear();
+    for (const [id, n] of state.nodes) {
+      const topics = new Map<bigint, Topic>();
+      for (const [h, t] of n.topics) {
+        topics.set(h, { ...t });
+      }
+      this.nodes.set(id, {
+        nodeId: n.nodeId,
+        online: n.online,
+        topics,
+        gossipQueue: n.gossipQueue.slice(),
+        gossipUrgent: n.gossipUrgent.slice(),
+        peers: n.peers.map(p => p ? { ...p } : null),
+        dedup: n.dedup.map(d => ({ ...d })),
+        nextBroadcastUs: n.nextBroadcastUs,
+        partitionSet: n.partitionSet,
+        peerReplacementMoratoriumUntil: n.peerReplacementMoratoriumUntil,
+        lastUrgentUs: n.lastUrgentUs,
+      });
+    }
+    // Deep clone queue
+    const queueData = state.queueData.map(ev => ({
+      ...ev,
+      payload: { ...ev.payload },
+    }));
+    this.queue = MinHeap.fromArray(queueData);
   }
 
   setNodePositions(positions: Map<number, { x: number; y: number }>): void {

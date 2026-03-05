@@ -29,22 +29,27 @@ export class UI {
   // Control elements
   private playBtn!: HTMLButtonElement;
   private stepBtn!: HTMLButtonElement;
-  private rewindBtn!: HTMLButtonElement;
   private speedSlider!: HTMLInputElement;
   private speedLabel!: HTMLSpanElement;
   private addNodeBtn!: HTMLButtonElement;
   private timeDisplay!: HTMLSpanElement;
   private convergenceDisplay!: HTMLSpanElement;
   private eventCountsEl!: HTMLElement;
+  private stepDisplay!: HTMLSpanElement;
+  private stepInput!: HTMLInputElement;
+  private goBtn!: HTMLButtonElement;
+  private seedInput!: HTMLInputElement;
 
   // State
-  playing = true;
+  playing = false;
   speedMultiplier = 0.1;
 
   // Callbacks
-  onRewind: (() => void) | null = null;
   onRelayout: (() => void) | null = null;
   onStepCallback: (() => void) | null = null;
+  onNavigate: ((index: number) => void) | null = null;
+  onApplySeed: ((seed: number) => void) | null = null;
+  onUserInteraction: (() => void) | null = null;
 
   constructor(
     sim: Simulation,
@@ -60,12 +65,16 @@ export class UI {
     this.buildSidePanel(sidePanel);
   }
 
-  /** Replace the simulation reference (used on rewind). Clears all overlays. */
+  /** Replace the simulation reference (used on seed reset). Clears all overlays. */
   setSim(sim: Simulation): void {
     this.sim = sim;
     for (const el of this.overlays.values()) el.remove();
     this.overlays.clear();
     this.prevTopicKeys.clear();
+  }
+
+  setSeedDisplay(seed: number): void {
+    this.seedInput.value = String(seed >>> 0);
   }
 
   private buildTopBar(bar: HTMLElement): void {
@@ -74,19 +83,12 @@ export class UI {
       this.playing = !this.playing;
       this.playBtn.textContent = this.playing ? "⏸ Pause" : "▶ Play";
     });
-    this.playing = true;
-    this.playBtn.textContent = "⏸ Pause";
 
     this.stepBtn = this.btn("Step", "⏭ Step");
     this.stepBtn.addEventListener("click", () => {
       if (!this.playing) {
         this.onStepCallback?.();
       }
-    });
-
-    this.rewindBtn = this.btn("Rewind", "⏮ Rewind");
-    this.rewindBtn.addEventListener("click", () => {
-      this.onRewind?.();
     });
 
     const speedSteps = [0.001, 0.01, 0.1, 1];
@@ -115,6 +117,7 @@ export class UI {
     this.addNodeBtn.addEventListener("click", () => {
       this.sim.addNode();
       this.onRelayout?.();
+      this.onUserInteraction?.();
     });
 
     this.timeDisplay = document.createElement("span");
@@ -125,16 +128,72 @@ export class UI {
     this.convergenceDisplay.style.marginLeft = "12px";
     this.convergenceDisplay.style.fontWeight = "bold";
 
+    // Step display + navigation
+    this.stepDisplay = document.createElement("span");
+    this.stepDisplay.style.marginLeft = "12px";
+    this.stepDisplay.style.fontWeight = "bold";
+    this.stepDisplay.textContent = "Step 0 / 0";
+
+    this.stepInput = document.createElement("input");
+    this.stepInput.type = "number";
+    this.stepInput.min = "1";
+    this.stepInput.style.width = "50px";
+    this.stepInput.style.marginLeft = "6px";
+    this.stepInput.style.fontSize = "12px";
+    this.stepInput.style.background = "#333";
+    this.stepInput.style.color = "#eee";
+    this.stepInput.style.border = "1px solid #666";
+    this.stepInput.style.borderRadius = "3px";
+    this.stepInput.style.padding = "2px 4px";
+
+    this.goBtn = this.btn("Go", "GO");
+    this.goBtn.addEventListener("click", () => {
+      const val = parseInt(this.stepInput.value);
+      if (!isNaN(val) && val >= 1) {
+        this.onNavigate?.(val - 1); // convert 1-based to 0-based
+      }
+    });
+
+    // Seed UI
+    const seedLabel = document.createElement("span");
+    seedLabel.textContent = "Seed:";
+    seedLabel.style.marginLeft = "6px";
+    seedLabel.style.fontSize = "12px";
+
+    this.seedInput = document.createElement("input");
+    this.seedInput.type = "text";
+    this.seedInput.style.width = "90px";
+    this.seedInput.style.marginLeft = "4px";
+    this.seedInput.style.fontSize = "12px";
+    this.seedInput.style.background = "#333";
+    this.seedInput.style.color = "#eee";
+    this.seedInput.style.border = "1px solid #666";
+    this.seedInput.style.borderRadius = "3px";
+    this.seedInput.style.padding = "2px 4px";
+
+    const applyBtn = this.btn("Apply Seed", "Apply");
+    applyBtn.addEventListener("click", () => {
+      const val = parseInt(this.seedInput.value);
+      if (!isNaN(val)) {
+        this.onApplySeed?.(val);
+      }
+    });
+
     const speedGroup = document.createElement("span");
     const speedTitle = document.createElement("span");
     speedTitle.textContent = "Speed: ";
     speedGroup.append(speedTitle, this.speedSlider, this.speedLabel);
 
+    const seedGroup = document.createElement("span");
+    seedGroup.append(seedLabel, this.seedInput, applyBtn);
+
     bar.append(
-      this.playBtn, this.stepBtn, this.rewindBtn,
+      this.playBtn, this.stepBtn,
       this.sep(), speedGroup,
       this.sep(), this.addNodeBtn,
       this.sep(), this.timeDisplay, this.convergenceDisplay,
+      this.sep(), this.stepDisplay, this.stepInput, this.goBtn,
+      this.sep(), seedGroup,
     );
   }
 
@@ -214,9 +273,12 @@ export class UI {
     panel.appendChild(this.eventCountsEl);
   }
 
-  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>): void {
+  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, stepCurrent: number, stepTotal: number): void {
     // Time display
     this.timeDisplay.textContent = `t = ${(timeUs / 1_000_000).toFixed(2)}s`;
+
+    // Step display
+    this.stepDisplay.textContent = `Step ${stepCurrent} / ${stepTotal}`;
 
     // Convergence
     const conv = this.sim.checkConvergenceFromSnaps(snaps);
@@ -296,12 +358,14 @@ export class UI {
       if (node) {
         const newSet = node.partitionSet === "A" ? "B" : "A";
         this.sim.setPartition(nodeId, newSet);
+        this.onUserInteraction?.();
       }
     });
 
     const restartBtn = this.miniBtn("Restart");
     restartBtn.addEventListener("click", () => {
       this.sim.restartNode(nodeId);
+      this.onUserInteraction?.();
     });
 
     const destroyBtn = this.miniBtn("Destroy");
@@ -312,6 +376,7 @@ export class UI {
       this.overlays.delete(nodeId);
       this.prevTopicKeys.delete(nodeId);
       this.onRelayout?.();
+      this.onUserInteraction?.();
     });
 
     const addTopicBtn = this.miniBtn("+Topic");
@@ -325,6 +390,7 @@ export class UI {
         this.sim.addTopicToNode(nodeId, name);
       }
       this.prevTopicKeys.delete(nodeId); // force rebuild
+      this.onUserInteraction?.();
     });
 
     const collideBtn = this.miniBtn("+Collide");
@@ -336,6 +402,7 @@ export class UI {
       if (isNaN(sid) || sid < 0) return;
       this.sim.addTopicToNode(nodeId, undefined, sid);
       this.prevTopicKeys.delete(nodeId); // force rebuild
+      this.onUserInteraction?.();
     });
 
     const topicContainer = document.createElement("div");
@@ -379,6 +446,7 @@ export class UI {
       rmBtn.addEventListener("click", () => {
         this.sim.destroyTopicOnNode(nodeId, t.hash);
         this.prevTopicKeys.delete(nodeId); // force rebuild next frame
+        this.onUserInteraction?.();
       });
 
       row.append(nameBtn, rmBtn);

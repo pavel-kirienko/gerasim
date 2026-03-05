@@ -59,6 +59,12 @@ export class Renderer {
     this.ctx = canvas.getContext("2d")!;
   }
 
+  clearAnimations(): void {
+    this.activeArrows = [];
+    this.activeBroadcasts = [];
+    this.activeConflicts.clear();
+  }
+
   layoutNodes(nodeIds: number[]): void {
     const n = nodeIds.length;
     if (n === 0) return;
