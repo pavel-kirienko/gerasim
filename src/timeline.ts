@@ -317,7 +317,7 @@ export class Timeline {
 
     const decimals = tickS < 0.01 ? 3 : tickS < 0.1 ? 2 : tickS < 1 ? 1 : 0;
     ctx.font = "9px monospace";
-    ctx.fillStyle = "#aaa";
+    ctx.fillStyle = "#fff";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     for (let i = startTick; i <= endTick; i++) {

@@ -38,6 +38,15 @@ describe("Simulation", () => {
       sim.stepUntil(1);
       expect(n.online).toBe(true);
     });
+
+    it("gossip stays disabled after join until commencement", () => {
+      const sim = makeSim();
+      sim.addNode();
+      sim.stepUntil(1);
+      expect(sim.nodes.get(0)!.gossipNextUs).toBe(Number.MAX_SAFE_INTEGER);
+      sim.stepUntil(30_000_000);
+      expect(sim.eventCounts["broadcast"] || 0).toBe(0);
+    });
   });
 
   describe("destroyNode", () => {
@@ -75,6 +84,25 @@ describe("Simulation", () => {
     it("returns null for nonexistent node", () => {
       const sim = makeSim();
       expect(sim.addTopicToNode(999)).toBeNull();
+    });
+
+    it("starts gossip once a local topic is created", () => {
+      const sim = makeSim();
+      sim.addNode();
+      sim.stepUntil(1);
+      sim.addTopicToNode(0, "my/topic");
+      expect(sim.nodes.get(0)!.gossipNextUs).not.toBe(Number.MAX_SAFE_INTEGER);
+      sim.stepUntil(sim.nowUs + 10_000_000);
+      expect(sim.eventCounts["broadcast"] || 0).toBeGreaterThan(0);
+    });
+
+    it("topics added before join still gossip after node joins", () => {
+      const sim = makeSim();
+      sim.addNode();
+      sim.addTopicToNode(0, "offline/topic");
+      sim.stepUntil(1);
+      sim.stepUntil(sim.nowUs + 10_000_000);
+      expect(sim.eventCounts["broadcast"] || 0).toBeGreaterThan(0);
     });
   });
 

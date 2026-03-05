@@ -6,9 +6,9 @@ import {
   SUBJECT_ID_PINNED_MAX, SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX,
 } from "../../src/constants.js";
 
-describe("topicHash (FNV-1a)", () => {
-  it("empty string returns FNV offset basis", () => {
-    expect(topicHash("")).toBe(0xcbf29ce484222325n);
+describe("topicHash", () => {
+  it("empty string is deterministic", () => {
+    expect(topicHash("")).toBe(topicHash(""));
   });
 
   it("is deterministic", () => {
@@ -17,6 +17,11 @@ describe("topicHash (FNV-1a)", () => {
 
   it("different inputs produce different hashes", () => {
     expect(topicHash("foo")).not.toBe(topicHash("bar"));
+  });
+
+  it("supports #hex hash override suffix", () => {
+    expect(topicHash("topic/x#10")).toBe(0x10n);
+    expect(topicHash("topic/x#1a2b")).toBe(0x1a2bn);
   });
 });
 

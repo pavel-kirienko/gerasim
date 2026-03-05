@@ -28,11 +28,14 @@ export interface Node {
   nodeId: number;
   online: boolean;
   topics: Map<bigint, Topic>;
+  // list head is index 0, list tail is the last element
   gossipQueue: bigint[];
   gossipUrgent: bigint[];
   peers: (GossipPeer | null)[];
   dedup: DedupEntry[];
-  nextBroadcastUs: number;
+  gossipNextUs: number;
+  gossipPollScheduledUs: number;
+  gossipPeriodUs: number;
   partitionSet: "A" | "B";
   peerReplacementMoratoriumUntil: number;
   lastUrgentUs: number;

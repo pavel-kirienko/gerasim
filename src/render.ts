@@ -10,7 +10,7 @@ import {
 } from "./constants.js";
 
 // Colors
-const C_BG          = "#1e1e1e";
+const C_BG          = "#000000";
 const C_ONLINE      = "#d5e8d4";
 const C_OFFLINE     = "#555555";
 const C_CONFLICT    = "#f8cecc";
@@ -21,7 +21,7 @@ const C_FORWARD     = "#9b59b6";
 const C_PEER_FRESH  = "#27ae60";
 const C_PEER_STALE  = "#95a5a6";
 const C_PEER_EMPTY  = "#666666";
-const C_TEXT        = "#e0e0e0";
+const C_TEXT        = "#ffffff";
 const C_SEPARATOR   = "#666666";
 
 const FONT_SIZE     = 11;
@@ -152,7 +152,7 @@ export class Renderer {
   }
 
   private computeBoxSize(snap: NodeSnapshot): { w: number; h: number } {
-    let rows = 4; // header + next HB + next tx + last urgent
+    let rows = 4; // header + next broadcast + next tx + last urgent
     rows += 1;    // separator
     rows += 1;    // topic column headers
     rows += Math.max(snap.topics.length, 1); // topics or "(no topics)"
@@ -211,12 +211,12 @@ export class Renderer {
     const partLabel = ` [partition ${snap.partitionSet}]`;
     putText(`N${snap.nodeId}  ${status}${partLabel}`, { bold: true, size: 12 });
 
-    // Row 1: next heartbeat
+    // Row 1: next broadcast
     if (snap.online && snap.nextBroadcastUs > 0) {
       const dt = Math.max(0, snap.nextBroadcastUs - timeUs) / 1_000_000;
-      putText(`next HB: ${dt.toFixed(2)}s`);
+      putText(`next broadcast: ${dt.toFixed(2)}s`);
     } else {
-      putText("next HB: --");
+      putText("next broadcast: --");
     }
 
     // Row 2: next topic to broadcast
