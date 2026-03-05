@@ -56,6 +56,7 @@ export class Renderer {
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
   private activeConflicts: Map<number, number> = new Map(); // nodeId -> flashUntilUs
+  highlightedNodeId: number | null = null;
 
   private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
   private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }
@@ -189,9 +190,19 @@ export class Renderer {
     ctx.roundRect(x, y, w, h, BOX_RADIUS);
     ctx.fillStyle = bg;
     ctx.fill();
-    ctx.strokeStyle = C_BORDER;
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
+    if (this.highlightedNodeId === snap.nodeId) {
+      ctx.save();
+      ctx.shadowColor = "#ff00ff";
+      ctx.shadowBlur = 12;
+      ctx.strokeStyle = "#ff00ff";
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      ctx.strokeStyle = C_BORDER;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
 
     // Text content
     const textX = x + BOX_PAD;

@@ -783,6 +783,7 @@ export class UI {
     for (const nid of nodeIds) {
       const th = document.createElement("th");
       th.textContent = `N${nid}`;
+      th.addEventListener("mouseenter", () => { this.renderer.highlightedNodeId = nid; });
       headerRow.appendChild(th);
     }
     thead.appendChild(headerRow);
@@ -804,6 +805,7 @@ export class UI {
       tr.appendChild(tdName);
       for (const nid of nodeIds) {
         const td = document.createElement("td");
+        td.addEventListener("mouseenter", () => { this.renderer.highlightedNodeId = nid; });
         const t = row.cells.get(nid);
         if (t) {
           const line1 = document.createElement("div");
@@ -834,6 +836,7 @@ export class UI {
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
+    table.addEventListener("mouseleave", () => { this.renderer.highlightedNodeId = null; });
 
     // 6. Replace previous table
     const old = this.topicPanel.querySelector("table");
