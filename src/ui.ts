@@ -2,7 +2,7 @@
 // UI controls & per-node overlay buttons
 // ---------------------------------------------------------------------------
 
-import { NodeSnapshot } from "./types.js";
+import { NodeSnapshot, TopicSnap } from "./types.js";
 import { Simulation } from "./sim.js";
 import { Renderer } from "./render.js";
 
@@ -25,6 +25,10 @@ export class UI {
   private overlays: Map<number, HTMLElement> = new Map();
   // Track previous topic hashes per node to avoid rebuilding buttons every frame
   private prevTopicKeys: Map<number, string> = new Map();
+
+  // Topic panel
+  private topicPanel: HTMLElement;
+  private topicCacheKey = "";
 
   // Control elements
   private playBtn!: HTMLButtonElement;
@@ -51,12 +55,15 @@ export class UI {
     topBar: HTMLElement,
     sidePanel: HTMLElement,
     overlayContainer: HTMLElement,
+    topicPanel: HTMLElement,
   ) {
     this.sim = sim;
     this.renderer = renderer;
     this.overlayContainer = overlayContainer;
+    this.topicPanel = topicPanel;
     this.buildTopBar(topBar);
     this.buildSidePanel(sidePanel);
+    this.initTopicPanelResize();
   }
 
   /** Replace the simulation reference (used on seed reset). Clears all overlays. */
@@ -65,6 +72,9 @@ export class UI {
     for (const el of this.overlays.values()) el.remove();
     this.overlays.clear();
     this.prevTopicKeys.clear();
+    this.topicCacheKey = "";
+    const table = this.topicPanel.querySelector("table");
+    if (table) table.remove();
   }
 
   setSeedDisplay(seed: number): void {
@@ -285,6 +295,9 @@ export class UI {
     this.convergenceDisplay.textContent = `Converged: ${conv ? "YES" : "NO"}`;
     this.convergenceDisplay.style.color = conv ? C_CONVERGED : C_DIVERGED;
 
+    // Update topic view table
+    this.updateTopicView(snaps);
+
     // Update per-node overlays
     this.syncOverlays(snaps);
   }
@@ -443,6 +456,205 @@ export class UI {
       row.append(nameBtn, rmBtn);
       container.appendChild(row);
     }
+  }
+
+  private initTopicPanelResize(): void {
+    const handle = this.topicPanel.querySelector("#topic-resize") as HTMLElement;
+    if (!handle) return;
+    let startX = 0, startW = 0;
+    const onMove = (e: MouseEvent) => {
+      const newW = Math.max(120, startW + (e.clientX - startX));
+      this.topicPanel.style.width = newW + "px";
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    handle.addEventListener("mousedown", (e: MouseEvent) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startW = this.topicPanel.offsetWidth;
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  private updateTopicView(snaps: Map<number, NodeSnapshot>): void {
+    // 1. Build matrix: Map<hash, { name, cells: Map<nodeId, TopicSnap> }>
+    type TopicRow = { name: string; cells: Map<number, TopicSnap> };
+    const matrix = new Map<bigint, TopicRow>();
+    const nodeIds: number[] = [];
+    for (const [nid, snap] of snaps) {
+      if (!snap.online) continue;
+      nodeIds.push(nid);
+      for (const t of snap.topics) {
+        let row = matrix.get(t.hash);
+        if (!row) {
+          row = { name: t.name, cells: new Map() };
+          matrix.set(t.hash, row);
+        }
+        row.cells.set(nid, t);
+      }
+    }
+    nodeIds.sort((a, b) => a - b);
+
+    // 2. Cache key — skip DOM rebuild if unchanged
+    let key = "";
+    for (const [hash, row] of matrix) {
+      for (const [nid, t] of row.cells) {
+        key += `${hash.toString(36)}:${nid}:${t.evictions}:${t.lage}:${t.subjectId},`;
+      }
+    }
+    if (key === this.topicCacheKey) return;
+    this.topicCacheKey = key;
+
+    // 3. Detect conflicts (partition-aware, mirrors checkConvergenceImpl)
+    const conflictReasons = new Map<string, string[]>(); // "hash:nodeId" → reasons
+    const addConflict = (hash: bigint, nid: number, reason: string) => {
+      const k = `${hash}:${nid}`;
+      let arr = conflictReasons.get(k);
+      if (!arr) { arr = []; conflictReasons.set(k, arr); }
+      if (!arr.includes(reason)) arr.push(reason);
+    };
+    // Group online nodes by partition
+    const partitionNodes = new Map<string, number[]>();
+    for (const [nid, snap] of snaps) {
+      if (!snap.online) continue;
+      let group = partitionNodes.get(snap.partitionSet);
+      if (!group) { group = []; partitionNodes.set(snap.partitionSet, group); }
+      group.push(nid);
+    }
+
+    for (const [, pNodes] of partitionNodes) {
+      // Per partition: hash → Map<nodeId, evictions>, subjectId → Map<hash, nodeIds>
+      const hashToEvByNode = new Map<bigint, Map<number, number>>();
+      const sidToHashes = new Map<number, Map<bigint, number[]>>();
+
+      for (const nid of pNodes) {
+        const snap = snaps.get(nid)!;
+        for (const t of snap.topics) {
+          // hash → per-node evictions
+          let evMap = hashToEvByNode.get(t.hash);
+          if (!evMap) { evMap = new Map(); hashToEvByNode.set(t.hash, evMap); }
+          evMap.set(nid, t.evictions);
+          // subjectId → hash → nodeIds
+          let hMap = sidToHashes.get(t.subjectId);
+          if (!hMap) { hMap = new Map(); sidToHashes.set(t.subjectId, hMap); }
+          let nList = hMap.get(t.hash);
+          if (!nList) { nList = []; hMap.set(t.hash, nList); }
+          nList.push(nid);
+        }
+      }
+
+      // Mark conflicts: different evictions for same hash
+      for (const [hash, evMap] of hashToEvByNode) {
+        const vals = new Set(evMap.values());
+        if (vals.size > 1) {
+          const detail = [...evMap.entries()].map(([n, e]) => `N${n}=${e}`).join(", ");
+          for (const nid of evMap.keys()) {
+            addConflict(hash, nid, `eviction count diverged (${detail})`);
+          }
+        }
+      }
+      // Mark conflicts: different hashes for same subjectId
+      for (const [sid, hashMap] of sidToHashes) {
+        if (hashMap.size > 1) {
+          const names: string[] = [];
+          for (const [h, nids] of hashMap) {
+            const row = matrix.get(h);
+            names.push(`"${row?.name ?? "?"}" on N${nids.join(",N")}`);
+          }
+          const reason = `subject ${sid} collision: ${names.join(" vs ")}`;
+          for (const [h, nids] of hashMap) {
+            for (const nid of nids) {
+              addConflict(h, nid, reason);
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Detect staleness: per topic, find max lage; cells with lage < maxLage get yellow
+    const staleCells = new Set<string>();
+    const topicMaxLage = new Map<bigint, number>();
+    for (const [hash, row] of matrix) {
+      let maxLage = 0;
+      for (const [, t] of row.cells) {
+        if (t.lage > maxLage) maxLage = t.lage;
+      }
+      topicMaxLage.set(hash, maxLage);
+      if (maxLage > 0) {
+        for (const [nid, t] of row.cells) {
+          const k = `${hash}:${nid}`;
+          if (t.lage < maxLage && !conflictReasons.has(k)) {
+            staleCells.add(k);
+          }
+        }
+      }
+    }
+
+    // 5. Build DOM
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    const thTopic = document.createElement("th");
+    thTopic.textContent = "Topic";
+    headerRow.appendChild(thTopic);
+    for (const nid of nodeIds) {
+      const th = document.createElement("th");
+      th.textContent = `N${nid}`;
+      headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    // Sort topics by max lage descending (oldest on top)
+    const sortedTopics = [...matrix.entries()].sort((a, b) => {
+      const la = topicMaxLage.get(a[0]) ?? 0;
+      const lb = topicMaxLage.get(b[0]) ?? 0;
+      if (lb !== la) return lb - la;
+      return a[1].name.localeCompare(b[1].name);
+    });
+    for (const [hash, row] of sortedTopics) {
+      const tr = document.createElement("tr");
+      const tdName = document.createElement("td");
+      tdName.textContent = row.name.length > 18 ? row.name.slice(0, 18) : row.name;
+      tdName.title = row.name;
+      tr.appendChild(tdName);
+      for (const nid of nodeIds) {
+        const td = document.createElement("td");
+        const t = row.cells.get(nid);
+        if (t) {
+          const line1 = document.createElement("div");
+          line1.className = "cell-line1";
+          line1.textContent = `${t.evictions} ${t.lage}`;
+          const line2 = document.createElement("div");
+          line2.className = "cell-line2";
+          line2.textContent = `${t.subjectId}`;
+          td.append(line1, line2);
+          const k = `${hash}:${nid}`;
+          const reasons = conflictReasons.get(k);
+          if (reasons) {
+            td.className = "cell-conflict";
+            td.title = `CONFLICT: ${reasons.join("; ")}\nevictions: ${t.evictions}, lage: ${t.lage}, subject: ${t.subjectId}`;
+          } else if (staleCells.has(k)) {
+            td.className = "cell-stale";
+            td.title = `evictions: ${t.evictions}, lage: ${t.lage}, subject: ${t.subjectId}`;
+          } else {
+            td.title = `evictions: ${t.evictions}, lage: ${t.lage}, subject: ${t.subjectId}`;
+          }
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+
+    // 6. Replace previous table
+    const old = this.topicPanel.querySelector("table");
+    if (old) old.remove();
+    this.topicPanel.appendChild(table);
   }
 
   private btn(title: string, label: string): HTMLButtonElement {

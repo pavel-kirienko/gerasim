@@ -190,7 +190,8 @@ function init(): void {
   renderer = new Renderer(canvas, simTooltip);
   eventLog = new EventLog();
   timeline = new Timeline(timelineCanvas, timelineTooltip, eventLog);
-  ui = new UI(sim, renderer, topBar, sidePanel, overlayContainer);
+  const topicPanel = document.getElementById("topic-panel")!;
+  ui = new UI(sim, renderer, topBar, sidePanel, overlayContainer, topicPanel);
 
   ui.onRelayout = relayout;
   ui.onApplySeed = resetWithSeed;

@@ -53,6 +53,60 @@
     pointer-events: auto;
   }
 
+  #topic-panel {
+    width: 280px;
+    min-width: 120px;
+    background: #222;
+    border-right: 1px solid #444;
+    overflow: auto;
+    flex-shrink: 0;
+    position: relative;
+    font-size: 10px;
+  }
+  #topic-panel table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  #topic-panel th, #topic-panel td {
+    border: 1px solid #444;
+    padding: 2px 4px;
+    text-align: center;
+    white-space: nowrap;
+  }
+  #topic-panel th {
+    background: #2a2a2a;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    font-weight: bold;
+  }
+  #topic-panel td:first-child, #topic-panel th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: #2a2a2a;
+    text-align: left;
+  }
+  #topic-panel th:first-child {
+    z-index: 3;
+  }
+  .cell-conflict { background: #6b2020 !important; }
+  .cell-stale { background: #5c5c10 !important; }
+  .cell-line1 { font-size: 9px; }
+  .cell-line2 { font-size: 9px; color: #aaa; }
+
+  #topic-resize {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 4px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 10;
+  }
+  #topic-resize:hover { background: #666; }
+
   #side-panel {
     width: 200px;
     background: #262626;
@@ -81,6 +135,7 @@
 <body>
   <div id="top-bar"></div>
   <div id="main-area">
+    <div id="topic-panel"><div id="topic-resize"></div></div>
     <div id="canvas-container">
       <canvas id="sim-canvas"></canvas>
       <div id="overlay-container"></div>
