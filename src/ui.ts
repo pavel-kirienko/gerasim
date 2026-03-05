@@ -28,7 +28,6 @@ export class UI {
 
   // Control elements
   private playBtn!: HTMLButtonElement;
-  private stepBtn!: HTMLButtonElement;
   private speedSlider!: HTMLInputElement;
   private speedLabel!: HTMLSpanElement;
   private addNodeBtn!: HTMLButtonElement;
@@ -43,7 +42,6 @@ export class UI {
 
   // Callbacks
   onRelayout: (() => void) | null = null;
-  onStepCallback: (() => void) | null = null;
   onApplySeed: ((seed: number) => void) | null = null;
   onUserInteraction: (() => void) | null = null;
 
@@ -73,11 +71,20 @@ export class UI {
     this.seedInput.value = String(seed >>> 0);
   }
 
+  private updatePlayBtn(): void {
+    this.playBtn.innerHTML = this.playing
+      ? '<span style="display:inline-flex;align-items:center;gap:4px"><span style="font-size:14px;line-height:1">⏸</span>Pause\u2004</span>'
+      : '<span style="display:inline-flex;align-items:center;gap:4px"><span style="font-size:14px;line-height:1">▶</span>Resume</span>';
+    this.playBtn.style.background = this.playing ? "#6b2020" : "#1a5c2a";
+  }
+
   private buildTopBar(bar: HTMLElement): void {
-    this.playBtn = this.btn("Play/Pause", "▶ Play");
+    this.playBtn = this.btn("Resume/Pause", "");
+    this.playBtn.style.width = "90px";
+    this.updatePlayBtn();
     const togglePlay = () => {
       this.playing = !this.playing;
-      this.playBtn.textContent = this.playing ? "⏸ Pause" : "▶ Play";
+      this.updatePlayBtn();
     };
     this.playBtn.addEventListener("click", togglePlay);
 
@@ -85,13 +92,6 @@ export class UI {
       if (e.code === "Space" && !(e.target instanceof HTMLInputElement)) {
         e.preventDefault();
         togglePlay();
-      }
-    });
-
-    this.stepBtn = this.btn("Step", "⏭ Step");
-    this.stepBtn.addEventListener("click", () => {
-      if (!this.playing) {
-        this.onStepCallback?.();
       }
     });
 
@@ -147,7 +147,7 @@ export class UI {
     this.seedInput.type = "text";
     this.seedInput.style.width = "90px";
     this.seedInput.style.marginLeft = "4px";
-    this.seedInput.style.fontSize = "12px";
+    this.seedInput.style.font = '12px "Ubuntu Mono", monospace';
     this.seedInput.style.background = "#333";
     this.seedInput.style.color = "#eee";
     this.seedInput.style.border = "1px solid #666";
@@ -171,7 +171,7 @@ export class UI {
     seedGroup.append(seedLabel, this.seedInput, applyBtn);
 
     bar.append(
-      this.playBtn, this.stepBtn,
+      this.playBtn,
       this.sep(), speedGroup,
       this.sep(), this.addNodeBtn,
       this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay,
@@ -421,13 +421,16 @@ export class UI {
     const b = document.createElement("button");
     b.textContent = label;
     b.title = title;
+    const defaultBg = "#444";
     b.style.cssText = `
-      padding: 4px 10px; margin: 0 2px; cursor: pointer;
-      background: #444; color: #eee; border: 1px solid #666;
-      border-radius: 4px; font-size: 12px;
+      padding: 0 10px; margin: 0 2px; cursor: pointer;
+      background: ${defaultBg}; color: #eee; border: 1px solid #666;
+      border-radius: 4px; font: 12px "Ubuntu Mono", monospace;
+      height: 26px; box-sizing: border-box;
+      display: inline-flex; align-items: center; justify-content: center;
     `;
-    b.addEventListener("mouseenter", () => { b.style.background = "#555"; });
-    b.addEventListener("mouseleave", () => { b.style.background = "#444"; });
+    b.addEventListener("mouseenter", () => { b.style.filter = "brightness(1.2)"; });
+    b.addEventListener("mouseleave", () => { b.style.filter = ""; });
     return b;
   }
 
@@ -436,7 +439,7 @@ export class UI {
     b.textContent = label;
     if (className) b.className = className;
     b.style.cssText = `
-      padding: 1px 5px; cursor: pointer; font-size: 10px;
+      padding: 1px 5px; cursor: pointer; font: 10px "Ubuntu Mono", monospace;
       background: #555; color: #eee; border: 1px solid #777;
       border-radius: 3px;
     `;

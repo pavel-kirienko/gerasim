@@ -119,14 +119,6 @@ function doStep(): boolean {
   return false;
 }
 
-/** Step until next event occurs (for Step button). */
-function doStepToNextEvent(): void {
-  const maxUs = sim.nowUs + MAX_BUDGET_US;
-  while (sim.nowUs < maxUs) {
-    if (doStep()) return;
-  }
-}
-
 function renderCurrent(events: EventRecord[] = []): void {
   const snaps = sim.snapshot();
   renderer.render(sim.nowUs, snaps, events);
@@ -201,7 +193,6 @@ function init(): void {
   ui = new UI(sim, renderer, topBar, sidePanel, overlayContainer);
 
   ui.onRelayout = relayout;
-  ui.onStepCallback = doStepToNextEvent;
   ui.onApplySeed = resetWithSeed;
   ui.onUserInteraction = () => {
     const pendingEvents = sim.drainPendingEvents();
