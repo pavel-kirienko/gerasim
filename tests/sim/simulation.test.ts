@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Simulation } from "../../src/sim.js";
 import type { NetworkConfig } from "../../src/types.js";
+import { GOSSIP_PERIOD } from "../../src/constants.js";
 
 const NET: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0 };
 
@@ -94,6 +95,26 @@ describe("Simulation", () => {
       expect(sim.nodes.get(0)!.gossipNextUs).not.toBe(Number.MAX_SAFE_INTEGER);
       const events = sim.stepUntil(sim.nowUs + 10_000_000);
       expect(events.filter(e => e.event === "broadcast").length).toBeGreaterThan(0);
+    });
+
+    it("initial gossip is dithered within period/8", () => {
+      const sim = makeSim(42);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+      const t0 = sim.nowUs;
+
+      sim.addTopicToNode(0, "a/topic");
+      sim.addTopicToNode(1, "b/topic");
+
+      const n0 = sim.nodes.get(0)!;
+      const n1 = sim.nodes.get(1)!;
+      const maxOffset = Math.floor(GOSSIP_PERIOD / 8);
+      expect(n0.gossipNextUs).toBeGreaterThanOrEqual(t0);
+      expect(n1.gossipNextUs).toBeGreaterThanOrEqual(t0);
+      expect(n0.gossipNextUs).toBeLessThanOrEqual(t0 + maxOffset);
+      expect(n1.gossipNextUs).toBeLessThanOrEqual(t0 + maxOffset);
+      expect(n0.gossipNextUs).not.toBe(n1.gossipNextUs);
     });
 
     it("topics added before join still gossip after node joins", () => {

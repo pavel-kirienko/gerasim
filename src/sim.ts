@@ -819,7 +819,8 @@ export class Simulation {
 
   private gossipBegin(node: Node): void {
     if (node.gossipNextUs === HEAT_DEATH) {
-      node.gossipNextUs = this.nowUs;
+      const deviation = Math.floor(node.gossipPeriodUs / 8);
+      node.gossipNextUs = this.nowUs + this.rng.randomInt(0, deviation + 1);
       this.ensurePollScheduled(node);
     }
   }
