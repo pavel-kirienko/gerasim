@@ -95,6 +95,8 @@ export class Viewport {
         pinchMidX = (t0.clientX + t1.clientX) / 2 - rect.left;
         pinchMidY = (t0.clientY + t1.clientY) / 2 - rect.top;
       } else if (e.touches.length === 1 && !pinching) {
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT" || tag === "A") return;
         e.preventDefault();
         touchPanning = true;
         touchStartX = e.touches[0].clientX;
