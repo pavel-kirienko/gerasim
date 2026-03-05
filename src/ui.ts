@@ -509,12 +509,23 @@ export class UI {
     this.topicCacheKey = key;
 
     // 3. Detect conflicts (partition-aware, mirrors checkConvergenceImpl)
-    const conflictReasons = new Map<string, string[]>(); // "hash:nodeId" → reasons
-    const addConflict = (hash: bigint, nid: number, reason: string) => {
-      const k = `${hash}:${nid}`;
-      let arr = conflictReasons.get(k);
-      if (!arr) { arr = []; conflictReasons.set(k, arr); }
-      if (!arr.includes(reason)) arr.push(reason);
+    // Each conflict gets a group ID; cells in the same group share a color hue.
+    let nextGroupId = 0;
+    const conflictInfo = new Map<string, { groupId: number; reasons: string[] }>(); // "hash:nodeId"
+    const assignGroup = (cells: { hash: bigint; nid: number }[], reason: string) => {
+      // Check if any cell already has a group — reuse it so overlapping conflicts merge
+      let gid = -1;
+      for (const c of cells) {
+        const existing = conflictInfo.get(`${c.hash}:${c.nid}`);
+        if (existing) { gid = existing.groupId; break; }
+      }
+      if (gid < 0) gid = nextGroupId++;
+      for (const c of cells) {
+        const k = `${c.hash}:${c.nid}`;
+        let info = conflictInfo.get(k);
+        if (!info) { info = { groupId: gid, reasons: [] }; conflictInfo.set(k, info); }
+        if (!info.reasons.includes(reason)) info.reasons.push(reason);
+      }
     };
     // Group online nodes by partition
     const partitionNodes = new Map<string, number[]>();
@@ -526,18 +537,15 @@ export class UI {
     }
 
     for (const [, pNodes] of partitionNodes) {
-      // Per partition: hash → Map<nodeId, evictions>, subjectId → Map<hash, nodeIds>
       const hashToEvByNode = new Map<bigint, Map<number, number>>();
       const sidToHashes = new Map<number, Map<bigint, number[]>>();
 
       for (const nid of pNodes) {
         const snap = snaps.get(nid)!;
         for (const t of snap.topics) {
-          // hash → per-node evictions
           let evMap = hashToEvByNode.get(t.hash);
           if (!evMap) { evMap = new Map(); hashToEvByNode.set(t.hash, evMap); }
           evMap.set(nid, t.evictions);
-          // subjectId → hash → nodeIds
           let hMap = sidToHashes.get(t.subjectId);
           if (!hMap) { hMap = new Map(); sidToHashes.set(t.subjectId, hMap); }
           let nList = hMap.get(t.hash);
@@ -546,32 +554,36 @@ export class UI {
         }
       }
 
-      // Mark conflicts: different evictions for same hash
+      // Eviction divergence: same hash, different eviction counts
       for (const [hash, evMap] of hashToEvByNode) {
         const vals = new Set(evMap.values());
         if (vals.size > 1) {
           const detail = [...evMap.entries()].map(([n, e]) => `N${n}=${e}`).join(", ");
-          for (const nid of evMap.keys()) {
-            addConflict(hash, nid, `eviction count diverged (${detail})`);
-          }
+          const cells = [...evMap.keys()].map(nid => ({ hash, nid }));
+          assignGroup(cells, `eviction count diverged (${detail})`);
         }
       }
-      // Mark conflicts: different hashes for same subjectId
+      // Subject-ID collision: same subject, different hashes
       for (const [sid, hashMap] of sidToHashes) {
         if (hashMap.size > 1) {
           const names: string[] = [];
+          const cells: { hash: bigint; nid: number }[] = [];
           for (const [h, nids] of hashMap) {
             const row = matrix.get(h);
             names.push(`"${row?.name ?? "?"}" on N${nids.join(",N")}`);
+            for (const nid of nids) cells.push({ hash: h, nid });
           }
-          const reason = `subject ${sid} collision: ${names.join(" vs ")}`;
-          for (const [h, nids] of hashMap) {
-            for (const nid of nids) {
-              addConflict(h, nid, reason);
-            }
-          }
+          assignGroup(cells, `subject ${sid} collision: ${names.join(" vs ")}`);
         }
       }
+    }
+
+    // Build hue palette: evenly spaced, avoiding yellow (stale) zone ~50-70
+    const groupCount = nextGroupId;
+    const groupHues: number[] = [];
+    for (let i = 0; i < groupCount; i++) {
+      // Spread across 0-360 starting at red, with golden-angle spacing for max distinction
+      groupHues.push((i * 137.508 + 0) % 360);
     }
 
     // 4. Detect staleness: per topic, find max lage; cells with lage < maxLage get yellow
@@ -586,7 +598,7 @@ export class UI {
       if (maxLage > 0) {
         for (const [nid, t] of row.cells) {
           const k = `${hash}:${nid}`;
-          if (t.lage < maxLage && !conflictReasons.has(k)) {
+          if (t.lage < maxLage && !conflictInfo.has(k)) {
             staleCells.add(k);
           }
         }
@@ -634,15 +646,18 @@ export class UI {
           line2.textContent = `${t.subjectId}`;
           td.append(line1, line2);
           const k = `${hash}:${nid}`;
-          const reasons = conflictReasons.get(k);
-          if (reasons) {
-            td.className = "cell-conflict";
-            td.title = `CONFLICT: ${reasons.join("; ")}\nevictions: ${t.evictions}, lage: ${t.lage}, subject: ${t.subjectId}`;
+          const info = conflictInfo.get(k);
+          const base = `evictions: ${t.evictions}, lage: ${t.lage}, subject: ${t.subjectId}`;
+          if (info) {
+            const hue = groupHues[info.groupId] ?? 0;
+            td.style.background = `hsl(${hue}, 60%, 25%)`;
+            td.style.borderColor = `hsl(${hue}, 70%, 40%)`;
+            td.title = `CONFLICT: ${info.reasons.join("; ")}\n${base}`;
           } else if (staleCells.has(k)) {
             td.className = "cell-stale";
-            td.title = `evictions: ${t.evictions}, lage: ${t.lage}, subject: ${t.subjectId}`;
+            td.title = base;
           } else {
-            td.title = `evictions: ${t.evictions}, lage: ${t.lage}, subject: ${t.subjectId}`;
+            td.title = base;
           }
         }
         tr.appendChild(td);
