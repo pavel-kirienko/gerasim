@@ -2,10 +2,12 @@
 // Entry point — animation loop, bootstrap
 // ---------------------------------------------------------------------------
 
-import { NetworkConfig } from "./types.js";
+import { NetworkConfig, EventRecord } from "./types.js";
 import { Simulation, SimState } from "./sim.js";
 import { Renderer } from "./render.js";
 import { UI } from "./ui.js";
+import { EventLog } from "./event-log.js";
+import { Timeline } from "./timeline.js";
 
 const INITIAL_NODES = 6;
 const STEP_US = 1_000; // 1ms sim time per step
@@ -21,6 +23,11 @@ let simTimeBudget = 0;
 // History
 let history: SimState[] = [];
 let historyIndex = -1; // -1 = no snapshots yet
+let historyTimes: number[] = [];
+
+// Event log & timeline
+let eventLog: EventLog;
+let timeline: Timeline;
 
 function createSim(seed?: number): Simulation {
   if (seed === undefined) {
@@ -41,29 +48,40 @@ function relayout(): void {
   const ids = [...sim.nodes.keys()].sort((a, b) => a - b);
   renderer.layoutNodes(ids);
   sim.setNodePositions(renderer.nodePositions);
+  timeline.setNodeIds(ids);
 }
 
 function resizeCanvas(): void {
   const container = canvas.parentElement!;
   canvas.width = container.clientWidth;
   canvas.height = container.clientHeight;
+  timeline.resize();
   relayout();
 }
 
-function saveSnapshot(): void {
+function saveSnapshot(events?: EventRecord[]): void {
   // Truncate future history if navigated back
   if (historyIndex < history.length - 1) {
     history.length = historyIndex + 1;
+    historyTimes.length = historyIndex + 1;
+    eventLog.truncateAfter(historyIndex);
   }
   history.push(sim.saveState());
+  historyTimes.push(sim.nowUs);
   historyIndex = history.length - 1;
+  timeline.setHistoryTimes(historyTimes);
+  timeline.setCurrentIndex(historyIndex);
+
+  if (events && events.length > 0) {
+    eventLog.ingest(events, historyIndex);
+  }
 }
 
 /** Single 10ms step. Returns true if events occurred (snapshot saved). */
 function doStep(): boolean {
   const newEvents = sim.stepUntil(sim.nowUs + STEP_US);
   if (newEvents.length > 0) {
-    saveSnapshot();
+    saveSnapshot(newEvents);
     renderCurrent(newEvents);
     return true;
   }
@@ -79,16 +97,18 @@ function doStepToNextEvent(): void {
   }
 }
 
-function renderCurrent(events: import("./types.js").EventRecord[] = []): void {
+function renderCurrent(events: EventRecord[] = []): void {
   const snaps = sim.snapshot();
   renderer.render(sim.nowUs, snaps, events);
-  ui.updateFrame(sim.nowUs, snaps, historyIndex + 1, history.length);
+  ui.updateFrame(sim.nowUs, snaps);
+  timeline.render(sim.nowUs);
 }
 
 function navigateTo(index: number): void {
   if (index < 0 || index >= history.length) return;
   sim.loadState(history[index]);
   historyIndex = index;
+  timeline.setCurrentIndex(historyIndex);
   renderer.clearAnimations();
   renderCurrent();
 }
@@ -97,9 +117,13 @@ function resetWithSeed(seed: number): void {
   sim = createSim(seed);
   ui.setSim(sim);
   history = [];
+  historyTimes = [];
   historyIndex = -1;
   lastWallTime = null;
   simTimeBudget = 0;
+  eventLog.clear();
+  timeline.setHistoryTimes(historyTimes);
+  timeline.setCurrentIndex(-1);
   relayout();
   renderCurrent();
 }
@@ -131,17 +155,26 @@ function init(): void {
   const topBar = document.getElementById("top-bar")!;
   const sidePanel = document.getElementById("side-panel")!;
   const overlayContainer = document.getElementById("overlay-container")!;
+  const timelineCanvas = document.getElementById("timeline-canvas") as HTMLCanvasElement;
+  const timelineTooltip = document.getElementById("timeline-tooltip")!;
 
   sim = createSim();
   renderer = new Renderer(canvas);
+  eventLog = new EventLog();
+  timeline = new Timeline(timelineCanvas, timelineTooltip, eventLog);
   ui = new UI(sim, renderer, topBar, sidePanel, overlayContainer);
 
   ui.onRelayout = relayout;
   ui.onStepCallback = doStepToNextEvent;
-  ui.onNavigate = navigateTo;
   ui.onApplySeed = resetWithSeed;
-  ui.onUserInteraction = () => { saveSnapshot(); renderCurrent(); };
+  ui.onUserInteraction = () => {
+    const pendingEvents = sim.drainPendingEvents();
+    saveSnapshot(pendingEvents);
+    renderCurrent();
+  };
   ui.setSeedDisplay(sim.seed);
+
+  timeline.onNavigate = navigateTo;
 
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);

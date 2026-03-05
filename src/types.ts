@@ -73,3 +73,21 @@ export interface NodeSnapshot {
   lastUrgentUs: number;
   partitionSet: "A" | "B";
 }
+
+// ---------------------------------------------------------------------------
+// Timeline types
+// ---------------------------------------------------------------------------
+
+export type TimelineCode = "GB"|"GU"|"GF"|"GR"|"TN"|"TC"|"TD"|"TX"|"NN"|"NX"|"CR";
+
+export interface TimelineEvent {
+  id: number;
+  timeUs: number;
+  code: TimelineCode;
+  nodeId: number;
+  topicHash: bigint;
+  details: Record<string, unknown>;
+  receiveIds: number[];      // for send events: linked receive event IDs
+  sendId: number | null;     // for GR events: the originating send event ID
+  historyIndex: number;
+}

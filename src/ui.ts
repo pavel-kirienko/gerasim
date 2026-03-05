@@ -35,9 +35,6 @@ export class UI {
   private timeDisplay!: HTMLSpanElement;
   private convergenceDisplay!: HTMLSpanElement;
   private eventCountsEl!: HTMLElement;
-  private stepDisplay!: HTMLSpanElement;
-  private stepInput!: HTMLInputElement;
-  private goBtn!: HTMLButtonElement;
   private seedInput!: HTMLInputElement;
 
   // State
@@ -47,7 +44,6 @@ export class UI {
   // Callbacks
   onRelayout: (() => void) | null = null;
   onStepCallback: (() => void) | null = null;
-  onNavigate: ((index: number) => void) | null = null;
   onApplySeed: ((seed: number) => void) | null = null;
   onUserInteraction: (() => void) | null = null;
 
@@ -128,32 +124,6 @@ export class UI {
     this.convergenceDisplay.style.marginLeft = "12px";
     this.convergenceDisplay.style.fontWeight = "bold";
 
-    // Step display + navigation
-    this.stepDisplay = document.createElement("span");
-    this.stepDisplay.style.marginLeft = "12px";
-    this.stepDisplay.style.fontWeight = "bold";
-    this.stepDisplay.textContent = "Step 0 / 0";
-
-    this.stepInput = document.createElement("input");
-    this.stepInput.type = "number";
-    this.stepInput.min = "1";
-    this.stepInput.style.width = "50px";
-    this.stepInput.style.marginLeft = "6px";
-    this.stepInput.style.fontSize = "12px";
-    this.stepInput.style.background = "#333";
-    this.stepInput.style.color = "#eee";
-    this.stepInput.style.border = "1px solid #666";
-    this.stepInput.style.borderRadius = "3px";
-    this.stepInput.style.padding = "2px 4px";
-
-    this.goBtn = this.btn("Go", "GO");
-    this.goBtn.addEventListener("click", () => {
-      const val = parseInt(this.stepInput.value);
-      if (!isNaN(val) && val >= 1) {
-        this.onNavigate?.(val - 1); // convert 1-based to 0-based
-      }
-    });
-
     // Seed UI
     const seedLabel = document.createElement("span");
     seedLabel.textContent = "Seed:";
@@ -192,7 +162,6 @@ export class UI {
       this.sep(), speedGroup,
       this.sep(), this.addNodeBtn,
       this.sep(), this.timeDisplay, this.convergenceDisplay,
-      this.sep(), this.stepDisplay, this.stepInput, this.goBtn,
       this.sep(), seedGroup,
     );
   }
@@ -273,12 +242,9 @@ export class UI {
     panel.appendChild(this.eventCountsEl);
   }
 
-  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, stepCurrent: number, stepTotal: number): void {
+  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>): void {
     // Time display
     this.timeDisplay.textContent = `t = ${(timeUs / 1_000_000).toFixed(2)}s`;
-
-    // Step display
-    this.stepDisplay.textContent = `Step ${stepCurrent} / ${stepTotal}`;
 
     // Convergence
     const conv = this.sim.checkConvergenceFromSnaps(snaps);

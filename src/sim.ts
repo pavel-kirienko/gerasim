@@ -242,6 +242,8 @@ export class Simulation {
 
   // Cumulative event log (for event counts in the UI)
   eventCounts: Record<string, number> = {};
+  // Pending events from user actions (topic add/remove, node destroy)
+  pendingEvents: EventRecord[] = [];
 
   constructor(net: NetworkConfig, rngSeed = 42) {
     this.net = net;
@@ -348,6 +350,10 @@ export class Simulation {
     if (node) {
       node.online = false;
       this.nodes.delete(nodeId);
+      this.pendingEvents.push({
+        timeUs: this.nowUs, event: "node_expunged", src: nodeId, dst: null,
+        topicHash: 0n, details: {},
+      });
     }
   }
 
@@ -397,6 +403,11 @@ export class Simulation {
     if (!node.gossipUrgent.includes(hash)) {
       node.gossipUrgent.push(hash);
     }
+    // Emit topic_new event
+    this.pendingEvents.push({
+      timeUs: this.nowUs, event: "topic_new", src: nodeId, dst: null,
+      topicHash: hash, details: { name },
+    });
     return topic;
   }
 
@@ -418,9 +429,24 @@ export class Simulation {
   destroyTopicOnNode(nodeId: number, hash: bigint): void {
     const node = this.nodes.get(nodeId);
     if (!node) return;
+    const topic = node.topics.get(hash);
     node.topics.delete(hash);
     node.gossipQueue = node.gossipQueue.filter(h => h !== hash);
     node.gossipUrgent = node.gossipUrgent.filter(h => h !== hash);
+    this.pendingEvents.push({
+      timeUs: this.nowUs, event: "topic_expunged", src: nodeId, dst: null,
+      topicHash: hash, details: { name: topic?.name ?? "?" },
+    });
+  }
+
+  /** Drain pending events from user actions (topic add/remove, node destroy). */
+  drainPendingEvents(): EventRecord[] {
+    const events = this.pendingEvents.slice();
+    for (const rec of events) {
+      this.eventCounts[rec.event] = (this.eventCounts[rec.event] || 0) + 1;
+    }
+    this.pendingEvents.length = 0;
+    return events;
   }
 
   /** Process events up to targetUs. Returns new EventRecords generated. */
@@ -567,6 +593,7 @@ export class Simulation {
       this.pushEvent(this.nowUs + delay, "MSG_ARRIVE", {
         src: sender.nodeId, dst: dest.nodeId,
         topic_hash: hash, evictions, lage, name, ttl: 0, msg_type: "broadcast",
+        send_time_us: this.nowUs,
       });
     }
     pushLog({
@@ -587,6 +614,7 @@ export class Simulation {
     this.pushEvent(this.nowUs + delay, "MSG_ARRIVE", {
       src: sender.nodeId, dst: destId,
       topic_hash: hash, evictions, lage, name, ttl, msg_type: msgType,
+      send_time_us: this.nowUs,
     });
     pushLog({
       timeUs: this.nowUs, event: msgType, src: sender.nodeId, dst: destId,
@@ -789,6 +817,13 @@ export class Simulation {
     const shouldForward = this.dedupIsFresh(dedup, dhash) && (ttl > 0);
     dedup.hash = dhash;
     dedup.lastSeenUs = this.nowUs;
+
+    // Emit "received" event for non-deduped messages
+    pushLog({
+      timeUs: this.nowUs, event: "received", src: dstId, dst: srcId,
+      topicHash: hash,
+      details: { originSrc: srcId, sendTimeUs: payload["send_time_us"], name, msgType: payload["msg_type"] },
+    });
 
     const mine = node.topics.get(hash);
     if (mine !== undefined) {
