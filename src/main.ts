@@ -17,6 +17,7 @@ let sim: Simulation;
 let renderer: Renderer;
 let ui: UI;
 let canvas: HTMLCanvasElement;
+let ctx: CanvasRenderingContext2D;
 let lastWallTime: number | null = null;
 let simTimeBudget = 0;
 
@@ -53,8 +54,14 @@ function relayout(): void {
 
 function resizeCanvas(): void {
   const container = canvas.parentElement!;
-  canvas.width = container.clientWidth;
-  canvas.height = container.clientHeight;
+  const dpr = window.devicePixelRatio || 1;
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   timeline.resize();
   relayout();
 }
@@ -158,14 +165,16 @@ function tick(wallTime: number): void {
 
 function init(): void {
   canvas = document.getElementById("sim-canvas") as HTMLCanvasElement;
+  ctx = canvas.getContext("2d")!;
   const topBar = document.getElementById("top-bar")!;
   const sidePanel = document.getElementById("side-panel")!;
   const overlayContainer = document.getElementById("overlay-container")!;
   const timelineCanvas = document.getElementById("timeline-canvas") as HTMLCanvasElement;
   const timelineTooltip = document.getElementById("timeline-tooltip")!;
 
+  const simTooltip = document.getElementById("sim-tooltip")!;
   sim = createSim();
-  renderer = new Renderer(canvas);
+  renderer = new Renderer(canvas, simTooltip);
   eventLog = new EventLog();
   timeline = new Timeline(timelineCanvas, timelineTooltip, eventLog);
   ui = new UI(sim, renderer, topBar, sidePanel, overlayContainer);

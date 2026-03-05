@@ -47,16 +47,26 @@ interface ActiveBroadcast {
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
+  private tooltip: HTMLElement | null = null;
   nodePositions: Map<number, { x: number; y: number }> = new Map();
   private nodeBoxSizes: Map<number, { w: number; h: number }> = new Map();
+  private lastSnaps: Map<number, NodeSnapshot> = new Map();
+  private lastTimeUs = 0;
 
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
   private activeConflicts: Map<number, number> = new Map(); // nodeId -> flashUntilUs
 
-  constructor(canvas: HTMLCanvasElement) {
+  private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
+  private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }
+
+  constructor(canvas: HTMLCanvasElement, tooltip?: HTMLElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
+    if (tooltip) {
+      this.tooltip = tooltip;
+      this.setupInteraction();
+    }
   }
 
   clearAnimations(): void {
@@ -68,8 +78,8 @@ export class Renderer {
   layoutNodes(nodeIds: number[]): void {
     const n = nodeIds.length;
     if (n === 0) return;
-    const cx = this.canvas.width / 2;
-    const cy = this.canvas.height / 2;
+    const cx = this.logicalW / 2;
+    const cy = this.logicalH / 2;
     const radius = Math.min(cx, cy) * 0.55 + n * 15;
     this.nodePositions.clear();
     for (let i = 0; i < n; i++) {
@@ -86,9 +96,11 @@ export class Renderer {
     snaps: Map<number, NodeSnapshot>,
     newEvents: EventRecord[],
   ): void {
+    this.lastSnaps = snaps;
+    this.lastTimeUs = timeUs;
     const ctx = this.ctx;
-    const W = this.canvas.width;
-    const H = this.canvas.height;
+    const W = this.logicalW;
+    const H = this.logicalH;
 
     // Clear
     ctx.fillStyle = C_BG;
@@ -527,5 +539,171 @@ export class Renderer {
     ctx.fill();
 
     ctx.restore();
+  }
+
+  // -- Hover interaction --
+
+  private setupInteraction(): void {
+    this.canvas.addEventListener("mousemove", (e) => {
+      this.handleHover(e.offsetX, e.offsetY);
+    });
+    this.canvas.addEventListener("mouseleave", () => {
+      if (this.tooltip) this.tooltip.style.display = "none";
+    });
+  }
+
+  private handleHover(mx: number, my: number): void {
+    if (!this.tooltip) return;
+
+    // Hit-test arrows (highest priority — small targets)
+    const arrow = this.hitTestArrow(mx, my);
+    if (arrow) {
+      this.showTooltip(mx, my, this.formatArrow(arrow));
+      return;
+    }
+
+    // Hit-test broadcast circles
+    const bc = this.hitTestBroadcast(mx, my);
+    if (bc) {
+      this.showTooltip(mx, my, this.formatBroadcast(bc));
+      return;
+    }
+
+    // Hit-test node boxes
+    const node = this.hitTestNode(mx, my);
+    if (node) {
+      this.showTooltip(mx, my, this.formatNode(node));
+      return;
+    }
+
+    this.tooltip.style.display = "none";
+  }
+
+  private hitTestNode(mx: number, my: number): NodeSnapshot | null {
+    for (const [nid, pos] of this.nodePositions) {
+      const size = this.nodeBoxSizes.get(nid);
+      if (!size) continue;
+      const x0 = pos.x - size.w / 2, y0 = pos.y - size.h / 2;
+      if (mx >= x0 && mx <= x0 + size.w && my >= y0 && my <= y0 + size.h) {
+        return this.lastSnaps.get(nid) ?? null;
+      }
+    }
+    return null;
+  }
+
+  private hitTestArrow(mx: number, my: number): ActiveArrow | null {
+    const threshold = 8;
+    for (const msg of this.activeArrows) {
+      const ev = msg.event;
+      const srcPos = this.nodePositions.get(ev.src);
+      if (!srcPos || ev.dst === null) continue;
+      const dstPos = this.nodePositions.get(ev.dst);
+      if (!dstPos) continue;
+
+      const srcBox = this.nodeBoxSizes.get(ev.src) || { w: BOX_WIDTH, h: 100 };
+      const dstBox = this.nodeBoxSizes.get(ev.dst) || { w: BOX_WIDTH, h: 100 };
+      const [x0, y0] = this.edgePoint(srcPos.x, srcPos.y, srcBox.w, srcBox.h, dstPos.x, dstPos.y);
+      const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
+
+      // Sample the bezier curve and check distance
+      const midX = (x0 + x1) / 2, midY = (y0 + y1) / 2;
+      const dx = x1 - x0, dy = y1 - y0;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      const off = len * 0.08;
+      const nx = -dy / (len || 1), ny = dx / (len || 1);
+      const cpx = midX + nx * off, cpy = midY + ny * off;
+
+      if (this.distToBezier(mx, my, x0, y0, cpx, cpy, x1, y1) < threshold) {
+        return msg;
+      }
+    }
+    return null;
+  }
+
+  private hitTestBroadcast(mx: number, my: number): ActiveBroadcast | null {
+    const threshold = 10;
+    for (const bc of this.activeBroadcasts) {
+      const srcPos = this.nodePositions.get(bc.src);
+      if (!srcPos) continue;
+      const elapsed = this.lastTimeUs - bc.startUs;
+      const radius = PROPAGATION_SPEED * (elapsed / 1_000_000);
+      const dist = Math.sqrt((mx - srcPos.x) ** 2 + (my - srcPos.y) ** 2);
+      if (Math.abs(dist - radius) < threshold) {
+        return bc;
+      }
+    }
+    return null;
+  }
+
+  private distToBezier(
+    px: number, py: number,
+    x0: number, y0: number, cpx: number, cpy: number, x1: number, y1: number,
+  ): number {
+    // Sample 16 points along the quadratic bezier, find min distance
+    let minDist = Infinity;
+    const N = 16;
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const u = 1 - t;
+      const bx = u * u * x0 + 2 * u * t * cpx + t * t * x1;
+      const by = u * u * y0 + 2 * u * t * cpy + t * t * y1;
+      const d = Math.sqrt((px - bx) ** 2 + (py - by) ** 2);
+      if (d < minDist) minDist = d;
+    }
+    return minDist;
+  }
+
+  private formatArrow(msg: ActiveArrow): string {
+    const ev = msg.event;
+    const d = ev.details || {};
+    const type = ev.event === "unicast" ? "Unicast" : "Forward";
+    const delayMs = ((d.delayUs as number) || 0) / 1000;
+    const lines = [`${type}  N${ev.src} → N${ev.dst}`];
+    if (d.name) lines.push(`Topic: ${d.name}`);
+    if (d.subjectId !== undefined) lines.push(`Subject: ${d.subjectId}`);
+    if (d.evictions !== undefined) lines.push(`Evictions: ${d.evictions}`);
+    if (d.lage !== undefined) lines.push(`Lage: ${d.lage}`);
+    if (d.ttl !== undefined) lines.push(`TTL: ${d.ttl}`);
+    if (delayMs > 0) lines.push(`Delay: ${delayMs.toFixed(1)}ms`);
+    return lines.join("\n");
+  }
+
+  private formatBroadcast(bc: ActiveBroadcast): string {
+    const d = bc.event.details || {};
+    const lines = [`Broadcast  N${bc.src}`];
+    if (d.name) lines.push(`Topic: ${d.name}`);
+    if (d.subjectId !== undefined) lines.push(`Subject: ${d.subjectId}`);
+    if (d.evictions !== undefined) lines.push(`Evictions: ${d.evictions}`);
+    if (d.lage !== undefined) lines.push(`Lage: ${d.lage}`);
+    return lines.join("\n");
+  }
+
+  private formatNode(snap: NodeSnapshot): string {
+    const status = snap.online ? "ONLINE" : "OFFLINE";
+    const lines = [`N${snap.nodeId}  ${status}  [partition ${snap.partitionSet}]`];
+    if (snap.topics.length > 0) {
+      lines.push(`Topics (${snap.topics.length}):`);
+      for (const t of snap.topics) {
+        lines.push(`  ${t.name}  S=${t.subjectId} ev=${t.evictions} lage=${t.lage}`);
+      }
+    } else {
+      lines.push("No topics");
+    }
+    const nPeers = snap.peers.filter(p => p !== null).length;
+    const nEmpty = snap.peers.length - nPeers;
+    lines.push(`Peers: ${nPeers} active, ${nEmpty} empty`);
+    return lines.join("\n");
+  }
+
+  private showTooltip(mx: number, my: number, text: string): void {
+    if (!this.tooltip) return;
+    this.tooltip.textContent = text;
+    this.tooltip.style.display = "block";
+    // Position relative to canvas container
+    const containerRect = this.canvas.parentElement!.getBoundingClientRect();
+    const tipX = Math.min(mx + 14, containerRect.width - 250);
+    const tipY = Math.max(4, my - 20);
+    this.tooltip.style.left = tipX + "px";
+    this.tooltip.style.top = tipY + "px";
   }
 }

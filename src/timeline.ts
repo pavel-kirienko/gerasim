@@ -57,6 +57,9 @@ export class Timeline {
   private currentHistoryIndex = 0;
 
   // Interaction state
+  private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
+  private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }
+
   private panning = false;
   private panLastX = 0;
   private panStartX = 0;
@@ -116,14 +119,20 @@ export class Timeline {
 
   resize(): void {
     const container = this.canvas.parentElement!;
-    this.canvas.width = container.clientWidth;
-    this.canvas.height = container.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    this.canvas.width = w * dpr;
+    this.canvas.height = h * dpr;
+    this.canvas.style.width = w + "px";
+    this.canvas.style.height = h + "px";
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   render(currentTimeUs: number): void {
     const ctx = this.ctx;
-    const W = this.canvas.width;
-    const H = this.canvas.height;
+    const W = this.logicalW;
+    const H = this.logicalH;
     if (W === 0 || H === 0) return;
 
     ctx.fillStyle = "#1a1a1a";
@@ -220,18 +229,18 @@ export class Timeline {
     const range = this.viewEndUs - this.viewStartUs;
     if (range <= 0) return GUTTER_W;
     const frac = (timeUs - this.viewStartUs) / range;
-    return GUTTER_W + frac * (this.canvas.width - GUTTER_W);
+    return GUTTER_W + frac * (this.logicalW - GUTTER_W);
   }
 
   private xToTime(x: number): number {
-    const plotW = this.canvas.width - GUTTER_W;
+    const plotW = this.logicalW - GUTTER_W;
     if (plotW <= 0) return this.viewStartUs;
     const frac = (x - GUTTER_W) / plotW;
     return this.viewStartUs + frac * (this.viewEndUs - this.viewStartUs);
   }
 
   private drawCausalArrows(ctx: CanvasRenderingContext2D, contentH: number): void {
-    const W = this.canvas.width;
+    const W = this.logicalW;
     for (const ev of this.eventLog.events) {
       if (ev.receiveIds.length === 0) continue;
       const sx = this.timeToX(ev.timeUs);
@@ -380,7 +389,7 @@ export class Timeline {
     canvas.addEventListener("mousemove", (e) => {
       if (this.panning) {
         const dx = e.offsetX - this.panLastX;
-        const plotW = this.canvas.width - GUTTER_W;
+        const plotW = this.logicalW - GUTTER_W;
         if (plotW > 0) {
           const range = this.viewEndUs - this.viewStartUs;
           const shift = -(dx / plotW) * range;
@@ -467,7 +476,7 @@ export class Timeline {
   }
 
   private handleHover(x: number, y: number): void {
-    const contentH = this.canvas.height - AXIS_H;
+    const contentH = this.logicalH - AXIS_H;
     if (y > contentH || x < GUTTER_W) {
       this.tooltip.style.display = "none";
       this.hoveredEvents = [];
