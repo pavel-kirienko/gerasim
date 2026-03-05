@@ -38,7 +38,8 @@ jobs:
       - name: Prepare site
         run: |
           mkdir _site
-          cp index.html _site/
+          HASH=$(git rev-parse --short HEAD)
+          sed "s|dist/main.js|dist/main.js?v=$HASH|g" index.html > _site/index.html
           cp -r dist _site/
           echo 'gerasim.opencyphal.org' > _site/CNAME
 
