@@ -16,6 +16,7 @@ export function mapCode(rec: EventRecord): TimelineCode {
     case "topic_expunged": return "TX";
     case "node_expunged":  return "NX";
     case "resolved":  return "CR";
+    case "peer_refresh": return "PR";
     case "conflict": {
       const t = rec.details?.type as string;
       return t === "collision" ? "TC" : "TD";

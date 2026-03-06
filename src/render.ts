@@ -47,6 +47,8 @@ export class Renderer {
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
   private activeConflicts: Map<number, number> = new Map(); // nodeId -> flashUntilUs
+  private activePeerFlashes = new Map<string, number>(); // "nodeId:peerIdx" → flashUntilUs
+  hoveredNodeId: number | null = null;
 
   private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
   private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }
@@ -74,16 +76,28 @@ export class Renderer {
     return until !== undefined && until >= this.lastTimeUs;
   }
 
+  getPeerFlashIndices(nid: number): Set<number> {
+    const result = new Set<number>();
+    for (const [key, until] of this.activePeerFlashes) {
+      if (until < this.lastTimeUs) continue;
+      const sep = key.indexOf(":");
+      if (parseInt(key.slice(0, sep)) === nid) result.add(parseInt(key.slice(sep + 1)));
+    }
+    return result;
+  }
+
   clearAnimations(): void {
     this.activeArrows = [];
     this.activeBroadcasts = [];
     this.activeConflicts.clear();
+    this.activePeerFlashes.clear();
   }
 
   rebuildAnimationsFromLog(eventLog: EventLog, currentTimeUs: number): void {
     this.activeArrows = [];
     this.activeBroadcasts = [];
     this.activeConflicts.clear();
+    this.activePeerFlashes.clear();
 
     for (const ev of eventLog.events) {
       if (ev.timeUs > currentTimeUs) continue;
@@ -120,6 +134,13 @@ export class Renderer {
           details: ev.details,
         };
         this.activeBroadcasts.push({ startUs: ev.timeUs, expireUs, src: ev.nodeId, event: rec });
+      } else if (ev.code === "PR") {
+        const flashUntil = ev.timeUs + 1_000_000;
+        if (currentTimeUs >= flashUntil) continue;
+        const peerIdx = ev.details.peerIdx as number;
+        if (peerIdx !== undefined) {
+          this.activePeerFlashes.set(`${ev.nodeId}:${peerIdx}`, flashUntil);
+        }
       }
     }
   }
@@ -180,6 +201,9 @@ export class Renderer {
       if (ev.event === "conflict") {
         this.activeConflicts.set(ev.src, timeUs + CONFLICT_FLASH_US);
       }
+      if (ev.event === "peer_refresh") {
+        this.activePeerFlashes.set(`${ev.src}:${ev.details?.peerIdx}`, timeUs + 1_000_000);
+      }
     }
     this.activeArrows = this.activeArrows.filter(m => m.expireUs > timeUs);
     this.activeBroadcasts = this.activeBroadcasts.filter(m => m.expireUs > timeUs);
@@ -189,6 +213,27 @@ export class Renderer {
 
     // Draw unicast/forward arrows (behind nodes)
     this.drawArrows(ctx, timeUs, snaps);
+
+    // Draw peer lines on hover
+    if (this.hoveredNodeId !== null) {
+      const snap = snaps.get(this.hoveredNodeId);
+      const srcPos = this.nodePositions.get(this.hoveredNodeId);
+      if (snap && srcPos) {
+        ctx.save();
+        ctx.strokeStyle = "#00ff00";
+        ctx.lineWidth = 1;
+        for (const p of snap.peers) {
+          if (!p) continue;
+          const dstPos = this.nodePositions.get(p.nodeId);
+          if (!dstPos) continue;
+          ctx.beginPath();
+          ctx.moveTo(srcPos.x, srcPos.y);
+          ctx.lineTo(dstPos.x, dstPos.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
   }
 
   // -- Info box helper --

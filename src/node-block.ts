@@ -34,6 +34,8 @@ export class NodeBlock {
 
   private topicCacheKey = "";
   private peerCacheKey = "";
+  private peerCells: [HTMLElement, HTMLElement][] = [];
+  onHover: ((nodeId: number | null) => void) | null = null;
 
   constructor(nodeId: number, callbacks: NodeBlockCallbacks) {
     this.nodeId = nodeId;
@@ -68,6 +70,9 @@ export class NodeBlock {
     this.headerEl.append(idSpan, this.statusLabel, this.partBtn, restartBtn, destroyBtn, addTopicBtn);
     this.setupDrag();
 
+    this.el.addEventListener("mouseenter", () => this.onHover?.(this.nodeId));
+    this.el.addEventListener("mouseleave", () => this.onHover?.(null));
+
     // Status section
     this.statusSection = document.createElement("div");
     this.statusSection.className = "nb-status";
@@ -98,7 +103,7 @@ export class NodeBlock {
     this.el.append(this.headerEl, this.statusSection, this.topicsContainer, peersContainer, resizeHandle);
   }
 
-  update(snap: NodeSnapshot, timeUs: number, isConflict: boolean): void {
+  update(snap: NodeSnapshot, timeUs: number, isConflict: boolean, peerFlashIndices?: Set<number>): void {
     // Status label
     const status = snap.online ? "ONLINE" : "OFFLINE";
     this.statusLabel.textContent = status;
@@ -158,6 +163,13 @@ export class NodeBlock {
     if (peerKey !== this.peerCacheKey) {
       this.peerCacheKey = peerKey;
       this.rebuildPeers(snap.peers, timeUs);
+    }
+
+    // Apply/clear peer flash
+    for (let i = 0; i < this.peerCells.length; i++) {
+      const bg = peerFlashIndices?.has(i) ? "#ff00ff" : "";
+      this.peerCells[i][0].style.background = bg;
+      this.peerCells[i][1].style.background = bg;
     }
   }
 
@@ -243,11 +255,13 @@ export class NodeBlock {
 
   private rebuildPeers(peers: (PeerSnap | null)[], timeUs: number): void {
     this.peersBody.innerHTML = "";
+    this.peerCells = [];
     const row1 = document.createElement("tr");
     const row2 = document.createElement("tr");
     for (const p of peers) {
       const td1 = document.createElement("td");
       const td2 = document.createElement("td");
+      this.peerCells.push([td1, td2]);
       if (p) {
         td1.textContent = `Node${p.nodeId}`;
         const age = (timeUs - p.lastSeenUs) / 1_000_000;

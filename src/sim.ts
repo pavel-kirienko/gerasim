@@ -1026,7 +1026,7 @@ export class Simulation {
     }
   }
 
-  private gossipPeerUpdate(node: Node, senderId: number): void {
+  private gossipPeerUpdate(node: Node, senderId: number, pushLog: (r: EventRecord) => void): void {
     for (const p of node.peers) {
       if (p && p.nodeId === senderId) {
         p.lastSeenUs = this.nowUs;
@@ -1046,7 +1046,10 @@ export class Simulation {
     }
 
     if (oldestSeen < threshold) {
+      const oldNodeId = node.peers[oldestIdx]?.nodeId ?? null;
       node.peers[oldestIdx] = { nodeId: senderId, lastSeenUs: this.nowUs };
+      pushLog({ timeUs: this.nowUs, event: "peer_refresh", src: node.nodeId, dst: null,
+        topicHash: 0n, details: { oldPeer: oldNodeId, newPeer: senderId, peerIdx: oldestIdx, reason: "stale" } });
       return;
     }
 
@@ -1055,7 +1058,10 @@ export class Simulation {
       this.rng.chance(GOSSIP_PEER_REPLACEMENT_PROBABILITY_RECIPROCAL)
     ) {
       const idx = this.rng.randrange(GOSSIP_PEER_COUNT);
+      const oldNodeId = node.peers[idx]?.nodeId ?? null;
       node.peers[idx] = { nodeId: senderId, lastSeenUs: this.nowUs };
+      pushLog({ timeUs: this.nowUs, event: "peer_refresh", src: node.nodeId, dst: null,
+        topicHash: 0n, details: { oldPeer: oldNodeId, newPeer: senderId, peerIdx: idx, reason: "random" } });
       const moratorium = GOSSIP_PERIOD >> 1;
       node.peerReplacementMoratoriumUntil = this.nowUs + this.ditherInt(moratorium, moratorium);
     }
@@ -1248,7 +1254,7 @@ export class Simulation {
     if ((lage < LAGE_MIN) || (lage > LAGE_MAX)) return;
     if (isPinned(hash) && evictions !== 0) return;
 
-    this.gossipPeerUpdate(node, srcId);
+    this.gossipPeerUpdate(node, srcId, pushLog);
 
     const dedupHash = gossipDedupHash(hash, evictions, lage);
     const dedup = this.dedupMatchOrLru(node, dedupHash);

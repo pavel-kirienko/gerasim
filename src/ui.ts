@@ -276,7 +276,7 @@ export class UI {
     this.speedLabel.style.minWidth = "60px";
     this.speedLabel.style.display = "inline-block";
 
-    this.addNodeBtn = this.btn("Add Node", "+ Node");
+    this.addNodeBtn = this.btn("Add node", "+ node");
     this.addNodeBtn.addEventListener("click", () => {
       this.sim.addNode();
       this.onRelayout?.();
@@ -328,7 +328,7 @@ export class UI {
     lossTitle.textContent = "Message loss: ";
     lossGroup.append(lossTitle, lossSlider, lossLabel);
 
-    const fitBtn = this.btn("Zoom to Fit", "Fit");
+    const fitBtn = this.btn("Zoom to fit", "Fit");
     fitBtn.addEventListener("click", () => this.onFitView?.());
 
     bar.append(
@@ -424,7 +424,7 @@ export class UI {
 
     // Network Config editor
     const configTitle = document.createElement("div");
-    configTitle.textContent = "Network Config";
+    configTitle.textContent = "Network config";
     configTitle.style.fontWeight = "bold";
     configTitle.style.marginTop = "12px";
     configTitle.style.marginBottom = "6px";
@@ -535,7 +535,7 @@ export class UI {
     }
 
     const boxSizes = new Map<number, { w: number; h: number }>();
-    const minimal = this.viewport.currentZoom < 0.8;
+    const minimal = this.viewport.currentZoom < 0.4;
 
     // Create or update blocks
     for (const [nid, snap] of snaps) {
@@ -545,12 +545,13 @@ export class UI {
       let block = this.nodeBlocks.get(nid);
       if (!block) {
         block = this.createNodeBlock(nid);
+        block.onHover = (id) => { this.renderer.hoveredNodeId = id; };
         this.overlayContainer.appendChild(block.el);
         this.nodeBlocks.set(nid, block);
       }
 
       block.setMinimalMode(minimal);
-      block.update(snap, timeUs, this.renderer.isNodeInConflict(nid));
+      block.update(snap, timeUs, this.renderer.isNodeInConflict(nid), this.renderer.getPeerFlashIndices(nid));
       block.setPosition(pos.x, pos.y);
       boxSizes.set(nid, block.getSize());
     }
@@ -626,7 +627,7 @@ export class UI {
     `;
 
     const title = document.createElement("div");
-    title.textContent = `Add topic to Node${nodeId}`;
+    title.textContent = `Add topic to node ${nodeId}`;
     title.style.fontWeight = "bold";
     title.style.marginBottom = "2px";
 
@@ -876,7 +877,7 @@ export class UI {
     box.style.cssText = "background:#2a2a2a;border:1px solid #444;border-radius:6px;padding:16px;min-width:260px";
 
     const title = document.createElement("div");
-    title.textContent = "Generate Network Config";
+    title.textContent = "Generate network config";
     title.style.cssText = "font:bold 13px 'Ubuntu Mono',monospace;color:#fff;margin-bottom:12px";
     box.appendChild(title);
 
@@ -922,6 +923,9 @@ export class UI {
 
     btnRow.append(genBtn, cancelBtn);
     box.appendChild(btnRow);
+    box.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter") { e.preventDefault(); genBtn.click(); }
+    });
     overlay.appendChild(box);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     document.body.appendChild(overlay);

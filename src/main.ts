@@ -57,11 +57,11 @@ function createSim(seed?: number): Simulation {
     s.addTopicToNode((i + 1) % INITIAL_NODES, name);
   }
   // Even nodes: colliding topics on subject 10000
-  for (let i = 0; i < INITIAL_NODES; i += 2) {
+  for (let i = 0; i < INITIAL_NODES; i += 4) {
     s.addTopicToNode(i, undefined, 10000);
   }
   // Odd nodes: colliding topics on subject 10001
-  for (let i = 1; i < INITIAL_NODES; i += 2) {
+  for (let i = 1; i < INITIAL_NODES; i += 4) {
     s.addTopicToNode(i, undefined, 10001);
   }
   // Clear initialization events — they're not interesting for the timeline

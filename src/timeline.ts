@@ -18,6 +18,7 @@ const CODE_COLORS: Record<TimelineCode, string> = {
   NN: "#27ae60",
   NX: "#95a5a6",
   CR: "#2ecc71",
+  PR: "#ff00ff",
 };
 
 const CODE_NAMES: Record<TimelineCode, string> = {
@@ -33,6 +34,7 @@ const CODE_NAMES: Record<TimelineCode, string> = {
   NN: "Node New",
   NX: "Node eXpunged",
   CR: "Conflict Resolved",
+  PR: "Peer Refresh",
 };
 
 const GUTTER_W = 40;
@@ -933,6 +935,10 @@ export class Timeline {
     else if (d.drop_reason === "ttl+dedup") text += "  Dropped: TTL=0 + recent dedup";
     if (d.type) text += `  Type: ${d.type}`;
     if (d.local_won !== undefined) text += `  Local won: ${d.local_won}`;
+    if (d.oldPeer !== undefined) text += `  Old: Node${d.oldPeer}`;
+    if (d.newPeer !== undefined) text += `  New: Node${d.newPeer}`;
+    if (d.peerIdx !== undefined) text += `  Idx: ${d.peerIdx}`;
+    if (d.reason) text += `  Reason: ${d.reason}`;
     return text;
   }
 
