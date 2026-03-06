@@ -203,8 +203,8 @@ export class Timeline {
       this.viewEndUs = this.viewStartUs + range;
     }
 
-    // When paused, keep cursor visible by panning
-    if (!playing) {
+    // When paused, keep cursor visible by panning (unless user manually scrolled)
+    if (!playing && !this.userHasManuallyScrolled) {
       if (currentTimeUs > this.viewEndUs) {
         this.viewStartUs = currentTimeUs - range * 0.8;
         this.viewEndUs = this.viewStartUs + range;

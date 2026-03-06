@@ -106,6 +106,11 @@ export class UI {
     this.topicCacheKey = "";
     const table = this.topicPanel.querySelector("table");
     if (table) table.remove();
+    // Clear focus state so stale hashes don't persist into the new sim
+    this.stickyTopicHash = null;
+    this.hoverTopicHash = null;
+    this.focusedTopicName = null;
+    this.statusBar.textContent = "";
   }
 
   setSeedDisplay(seed: number): void {
