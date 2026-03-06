@@ -27,6 +27,15 @@ export class Viewport {
 
     // Wheel zoom (centered on cursor)
     container.addEventListener("wheel", (e) => {
+      // Don't zoom if scrolling inside a scrollable child element
+      const target = e.target as HTMLElement;
+      const scrollable = target.closest(".nb-topics");
+      if (scrollable) {
+        const el = scrollable as HTMLElement;
+        const atTop = el.scrollTop === 0 && e.deltaY < 0;
+        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight && e.deltaY > 0;
+        if (!atTop && !atBottom) return;
+      }
       e.preventDefault();
       const rect = container.getBoundingClientRect();
       const mx = e.clientX - rect.left;
@@ -49,6 +58,8 @@ export class Viewport {
     let startX = 0, startY = 0, startPanX = 0, startPanY = 0;
 
     container.addEventListener("mousedown", (e) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "A") return;
       if (e.button === 1 || e.button === 0) {
         e.preventDefault();
         panning = true;

@@ -795,7 +795,7 @@ export class UI {
   }
 
   private initTopicPanelResize(): void {
-    const handle = this.topicPanel.querySelector("#topic-resize") as HTMLElement;
+    const handle = document.getElementById("topic-resize");
     if (!handle) return;
     let startX = 0, startW = 0;
     const onMove = (e: MouseEvent) => {
