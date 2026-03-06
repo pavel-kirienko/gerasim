@@ -237,9 +237,12 @@ export class UI {
     this.playBtn.addEventListener("click", togglePlay);
 
     document.addEventListener("keydown", (e) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const t = e.target;
+      if (t instanceof HTMLTextAreaElement) return;
+      if (t instanceof HTMLInputElement && t.type !== "range") return;
       if (e.code === "Space") {
         e.preventDefault();
+        if (t instanceof HTMLElement) t.blur();
         togglePlay();
       } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
         e.preventDefault();
