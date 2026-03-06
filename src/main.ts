@@ -102,6 +102,32 @@ function resizeCanvas(): void {
   viewport.applyToWrapper();
 }
 
+function setupTimelineResize(): void {
+  const handle = document.getElementById("timeline-resize-handle")!;
+  const container = document.getElementById("timeline-container")!;
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    dragging = true;
+    startY = e.clientY;
+    startH = container.offsetHeight;
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const newH = Math.max(100, startH - (e.clientY - startY));
+    container.style.height = newH + "px";
+    resizeCanvas();
+  });
+
+  document.addEventListener("mouseup", () => {
+    dragging = false;
+  });
+}
+
 function saveSnapshot(events?: EventRecord[]): void {
   history.push(sim.saveState());
   historyTimes.push(sim.nowUs);
@@ -227,6 +253,7 @@ function init(): void {
   timeline.isPlaying = () => ui.playing;
 
   resizeCanvas();
+  setupTimelineResize();
   window.addEventListener("resize", resizeCanvas);
 
   renderCurrent();
