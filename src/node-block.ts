@@ -105,7 +105,7 @@ export class NodeBlock {
     this.statusLabel.style.color = snap.online ? "#8f8" : "#f88";
 
     // Partition button
-    this.partBtn.textContent = `Partition ${snap.partitionSet}`;
+    this.partBtn.textContent = `partition ${snap.partitionSet}`;
     this.partBtn.style.background = snap.partitionSet === "A" ? "#3498db" : "#e67e22";
 
     // Border color for conflict

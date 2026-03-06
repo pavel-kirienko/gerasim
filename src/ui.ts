@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { NodeSnapshot, TopicSnap } from "./types.js";
-import { Simulation, topicHash, subjectId } from "./sim.js";
+import { Simulation, topicHash, subjectId, topicLage } from "./sim.js";
 import { SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX } from "./constants.js";
 import { Renderer } from "./render.js";
 import { Viewport } from "./viewport.js";
@@ -18,6 +18,102 @@ const C_PEER_FRESH = "#27ae60";
 const C_PEER_STALE = "#95a5a6";
 const C_CONVERGED = "#27ae60";
 const C_DIVERGED  = "#c0392b";
+
+/** JSON.stringify with leaf containers (no nested arrays/objects) on a single line. */
+function compactJSON(obj: any, indent = 2): string {
+  function isPrimitive(v: any): boolean {
+    return v === null || typeof v !== "object";
+  }
+  function isLeaf(v: any): boolean {
+    if (isPrimitive(v)) return true;
+    if (Array.isArray(v)) return v.every(isPrimitive);
+    return Object.values(v).every(isPrimitive);
+  }
+  function fmt(v: any, depth: number): string {
+    if (v === null || typeof v !== "object") return JSON.stringify(v);
+    const pad = " ".repeat(depth * indent);
+    const inner = " ".repeat((depth + 1) * indent);
+    if (Array.isArray(v)) {
+      if (v.length === 0) return "[]";
+      if (isLeaf(v)) return "[ " + v.map(e => fmt(e, 0)).join(", ") + " ]";
+      return "[\n" + v.map(e => inner + fmt(e, depth + 1)).join(",\n") + "\n" + pad + "]";
+    }
+    const keys = Object.keys(v);
+    if (keys.length === 0) return "{}";
+    if (isLeaf(v)) return "{ " + keys.map(k => JSON.stringify(k) + ": " + fmt(v[k], 0)).join(", ") + " }";
+    return "{\n" + keys.map(k => inner + JSON.stringify(k) + ": " + fmt(v[k], depth + 1)).join(",\n") + "\n" + pad + "}";
+  }
+  return fmt(obj, 0);
+}
+
+function genTopicName(index: number): string {
+  const letter = String.fromCharCode(97 + (index % 26));
+  return index < 26 ? "topic/" + letter : "topic/" + letter + Math.floor(index / 26);
+}
+
+function findCollidingPair(targetSid: number): [string, string] {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const names: string[] = [];
+  for (let attempt = 0; names.length < 2 && attempt < 100000; attempt++) {
+    let name = "";
+    for (let i = 0; i < 4; i++) name += alphabet[Math.random() * alphabet.length | 0];
+    const hash = topicHash(name);
+    if (subjectId(hash, 0, SUBJECT_ID_MODULUS) === targetSid) {
+      if (names.length === 0 || name !== names[0]) names.push(name);
+    }
+  }
+  return [names[0] ?? "collide_a", names[1] ?? "collide_b"];
+}
+
+const EDITOR_TEXT_CSS = "margin:0;padding:6px;font:11px/1.3 'Ubuntu Mono',monospace;white-space:pre;tab-size:2;letter-spacing:normal;word-spacing:normal;text-rendering:auto";
+
+function escapeHTML(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+function highlightJSON(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== '"') {
+        if (src[j] === '\\') j++;
+        j++;
+      }
+      j++; // closing quote
+      const raw = escapeHTML(src.slice(i, j));
+      let k = j;
+      while (k < src.length && (src[k] === ' ' || src[k] === '\t')) k++;
+      if (src[k] === ':') {
+        out += '<span class="jk">' + raw + '</span>';
+      } else {
+        out += '<span class="js">' + raw + '</span>';
+      }
+      i = j;
+    } else if (ch === '-' || (ch >= '0' && ch <= '9')) {
+      let j = i;
+      if (src[j] === '-') j++;
+      while (j < src.length && ((src[j] >= '0' && src[j] <= '9') || src[j] === '.' || src[j] === 'e' || src[j] === 'E' || src[j] === '+' || src[j] === '-')) j++;
+      if (j > i + (src[i] === '-' ? 1 : 0)) {
+        out += '<span class="jn">' + escapeHTML(src.slice(i, j)) + '</span>';
+        i = j;
+      } else {
+        out += escapeHTML(ch);
+        i++;
+      }
+    } else if (src.startsWith("true", i) || src.startsWith("false", i) || src.startsWith("null", i)) {
+      const word = src.startsWith("true", i) ? "true" : src.startsWith("false", i) ? "false" : "null";
+      out += '<span class="jb">' + word + '</span>';
+      i += word.length;
+    } else {
+      out += escapeHTML(ch);
+      i++;
+    }
+  }
+  return out;
+}
 
 export class UI {
   private sim: Simulation;
@@ -46,7 +142,8 @@ export class UI {
   private timeDisplay!: HTMLSpanElement;
   private historyDisplay!: HTMLSpanElement;
   private convergenceDisplay!: HTMLSpanElement;
-  private seedInput!: HTMLInputElement;
+  private configTextarea!: HTMLTextAreaElement;
+  private configPre!: HTMLPreElement;
 
   // State
   playing = true;
@@ -54,7 +151,7 @@ export class UI {
 
   // Callbacks
   onRelayout: (() => void) | null = null;
-  onApplySeed: ((seed: number) => void) | null = null;
+  onApplyConfig: ((config: any) => void) | null = null;
   onUserInteraction: (() => void) | null = null;
   onFitView: (() => void) | null = null;
 
@@ -76,6 +173,7 @@ export class UI {
     this.buildTopBar(topBar);
     this.buildSidePanel(sidePanel);
     this.initTopicPanelResize();
+    this.initSidePanelResize();
 
     if (window.innerWidth < 1500) {
       const overlay = document.createElement("div");
@@ -113,10 +211,6 @@ export class UI {
     this.statusBar.textContent = "";
   }
 
-  setSeedDisplay(seed: number): void {
-    this.seedInput.value = String(seed >>> 0);
-  }
-
   setTimeline(tl: Timeline): void {
     this.timeline = tl;
   }
@@ -143,7 +237,7 @@ export class UI {
     this.playBtn.addEventListener("click", togglePlay);
 
     document.addEventListener("keydown", (e) => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.code === "Space") {
         e.preventDefault();
         togglePlay();
@@ -202,31 +296,6 @@ export class UI {
     this.convergenceDisplay.style.marginLeft = "12px";
     this.convergenceDisplay.style.fontWeight = "bold";
 
-    // Seed UI
-    const seedLabel = document.createElement("span");
-    seedLabel.textContent = "Seed:";
-    seedLabel.style.marginLeft = "6px";
-    seedLabel.style.fontSize = "12px";
-
-    this.seedInput = document.createElement("input");
-    this.seedInput.type = "text";
-    this.seedInput.style.width = "90px";
-    this.seedInput.style.marginLeft = "4px";
-    this.seedInput.style.font = '12px "Ubuntu Mono", monospace';
-    this.seedInput.style.background = "#333";
-    this.seedInput.style.color = "#fff";
-    this.seedInput.style.border = "1px solid #666";
-    this.seedInput.style.borderRadius = "3px";
-    this.seedInput.style.padding = "2px 4px";
-
-    const applyBtn = this.btn("Apply Seed", "Apply");
-    applyBtn.addEventListener("click", () => {
-      const val = parseInt(this.seedInput.value);
-      if (!isNaN(val)) {
-        this.onApplySeed?.(val);
-      }
-    });
-
     const speedGroup = document.createElement("span");
     const speedTitle = document.createElement("span");
     speedTitle.textContent = "Speed: ";
@@ -259,9 +328,6 @@ export class UI {
     lossTitle.textContent = "Message loss: ";
     lossGroup.append(lossTitle, lossSlider, lossLabel);
 
-    const seedGroup = document.createElement("span");
-    seedGroup.append(seedLabel, this.seedInput, applyBtn);
-
     const fitBtn = this.btn("Zoom to Fit", "Fit");
     fitBtn.addEventListener("click", () => this.onFitView?.());
 
@@ -271,7 +337,6 @@ export class UI {
       this.sep(), lossGroup,
       this.sep(), this.addNodeBtn, fitBtn,
       this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay,
-      this.sep(), seedGroup,
     );
   }
 
@@ -279,7 +344,7 @@ export class UI {
     // Logo
     const logo = document.createElement("img");
     logo.src = "static/opencyphal-dark.png";
-    logo.style.width = "100%";
+    logo.style.cssText = "display:block;width:100%;max-width:150px;height:auto;margin:0 auto";
     logo.style.marginBottom = "4px";
     panel.appendChild(logo);
 
@@ -357,6 +422,69 @@ export class UI {
       panel.appendChild(row);
     }
 
+    // Network Config editor
+    const configTitle = document.createElement("div");
+    configTitle.textContent = "Network Config";
+    configTitle.style.fontWeight = "bold";
+    configTitle.style.marginTop = "12px";
+    configTitle.style.marginBottom = "6px";
+    configTitle.style.fontSize = "13px";
+    panel.appendChild(configTitle);
+
+    const editorWrap = document.createElement("div");
+    editorWrap.style.cssText = "position:relative;flex:1;min-height:120px;overflow:hidden;border:1px solid #444;border-radius:3px;background:#1e1e1e";
+
+    const pre = document.createElement("pre");
+    pre.style.cssText = EDITOR_TEXT_CSS + ";position:absolute;top:0;left:0;right:0;bottom:0;overflow:auto;color:#d4d4d4;pointer-events:none;z-index:0";
+    pre.setAttribute("aria-hidden", "true");
+    this.configPre = pre;
+
+    const ta = document.createElement("textarea");
+    ta.style.cssText = EDITOR_TEXT_CSS + ";position:absolute;top:0;left:0;width:100%;height:100%;color:transparent;caret-color:#d4d4d4;background:transparent;border:none;outline:none;resize:none;overflow:auto;z-index:1";
+    ta.spellcheck = false;
+    ta.addEventListener("input", () => this.syncHighlight());
+    ta.addEventListener("scroll", () => {
+      pre.scrollTop = ta.scrollTop;
+      pre.scrollLeft = ta.scrollLeft;
+    });
+    this.configTextarea = ta;
+
+    editorWrap.append(pre, ta);
+    panel.appendChild(editorWrap);
+
+    // Buttons
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:6px;margin-top:6px;flex-shrink:0";
+
+    const captureBtn = document.createElement("button");
+    captureBtn.textContent = "Capture";
+    captureBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#2980b9;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    captureBtn.addEventListener("click", () => this.captureConfig());
+
+    const applyConfigBtn = document.createElement("button");
+    applyConfigBtn.textContent = "Apply";
+    applyConfigBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#27ae60;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    applyConfigBtn.addEventListener("click", () => {
+      try {
+        const config = JSON.parse(this.configTextarea.value);
+        if (typeof config.seed !== "number") throw new Error("seed must be a number");
+        if (!Array.isArray(config.nodes)) throw new Error("nodes must be an array");
+        this.onApplyConfig?.(config);
+      } catch (e: any) {
+        alert("Invalid config: " + e.message);
+      }
+    });
+
+    const generateBtn = document.createElement("button");
+    generateBtn.textContent = "Generate\u2026";
+    generateBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#8e44ad;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    generateBtn.addEventListener("click", () => this.showGenerateDialog());
+
+    btnRow.append(captureBtn, applyConfigBtn, generateBtn);
+    panel.appendChild(btnRow);
+
+    // Populate editor with current config on load
+    this.captureConfig();
   }
 
   updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, historySize?: number, maxTimeUs?: number, rewound = false): void {
@@ -673,6 +801,7 @@ export class UI {
     const onMove = (e: MouseEvent) => {
       const newW = Math.max(120, startW + (e.clientX - startX));
       this.topicPanel.style.width = newW + "px";
+      window.dispatchEvent(new Event("resize"));
     };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
@@ -685,6 +814,163 @@ export class UI {
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     });
+  }
+
+  private initSidePanelResize(): void {
+    const handle = document.getElementById("side-resize");
+    if (!handle) return;
+    const panel = handle.parentElement!;
+    let startX = 0, startW = 0;
+    const onMove = (e: MouseEvent) => {
+      const newW = Math.min(600, Math.max(200, startW - (e.clientX - startX)));
+      panel.style.width = newW + "px";
+      window.dispatchEvent(new Event("resize"));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    handle.addEventListener("mousedown", (e: MouseEvent) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startW = panel.offsetWidth;
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  captureConfig(): void {
+    const nodeIds = [...this.sim.nodes.keys()].sort((a, b) => a - b);
+    const nodes = nodeIds.map(nid => {
+      const node = this.sim.nodes.get(nid)!;
+      const topics = [...node.topics.values()].map(t => {
+        const entry: any = { name: t.name };
+        if (t.evictions !== 0) entry.evictions = t.evictions;
+        const lage = topicLage(t.tsCreatedUs, this.sim.nowUs);
+        if (lage !== LAGE_MIN) entry.lage = lage;
+        return entry;
+      });
+      return topics.length > 0 ? { topics } : {};
+    });
+    const obj: any = {
+      seed: this.sim.seed >>> 0,
+      network: {
+        delay_us: this.sim.net.delayUs,
+        loss_probability: this.sim.net.lossProbability,
+      },
+      nodes,
+    };
+    this.configTextarea.value = compactJSON(obj);
+    this.syncHighlight();
+  }
+
+  private syncHighlight(): void {
+    this.configPre.innerHTML = highlightJSON(this.configTextarea.value);
+  }
+
+  private showGenerateDialog(): void {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000";
+
+    const box = document.createElement("div");
+    box.style.cssText = "background:#2a2a2a;border:1px solid #444;border-radius:6px;padding:16px;min-width:260px";
+
+    const title = document.createElement("div");
+    title.textContent = "Generate Network Config";
+    title.style.cssText = "font:bold 13px 'Ubuntu Mono',monospace;color:#fff;margin-bottom:12px";
+    box.appendChild(title);
+
+    const makeField = (label: string, def: number, _min: number): HTMLInputElement => {
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom:8px;display:flex;align-items:center;justify-content:space-between";
+      const lbl = document.createElement("label");
+      lbl.textContent = label;
+      lbl.style.cssText = "font:11px 'Ubuntu Mono',monospace;color:#ccc";
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.inputMode = "numeric";
+      inp.value = String(def);
+      inp.style.cssText = "width:60px;padding:2px 4px;font:11px 'Ubuntu Mono',monospace;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;text-align:right";
+      inp.addEventListener("input", () => { inp.value = inp.value.replace(/[^0-9]/g, ""); });
+      row.append(lbl, inp);
+      box.appendChild(row);
+      return inp;
+    };
+
+    const nodesInput = makeField("Nodes", 6, 1);
+    const topicsInput = makeField("Topics", 6, 0);
+    const collidingInput = makeField("Colliding topics", 2, 0);
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:8px;margin-top:12px";
+
+    const genBtn = document.createElement("button");
+    genBtn.textContent = "Generate";
+    genBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#8e44ad;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    genBtn.addEventListener("click", () => {
+      const nc = Math.max(1, parseInt(nodesInput.value) || 1);
+      const tc = Math.max(0, parseInt(topicsInput.value) || 0);
+      const cc = Math.max(0, parseInt(collidingInput.value) || 0);
+      overlay.remove();
+      this.generateConfig(nc, tc, cc);
+    });
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#555;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    cancelBtn.addEventListener("click", () => overlay.remove());
+
+    btnRow.append(genBtn, cancelBtn);
+    box.appendChild(btnRow);
+    overlay.appendChild(box);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  private generateConfig(nodeCount: number, topicCount: number, collidingCount: number): void {
+    const seed = Math.random() * 0xFFFFFFFF | 0;
+
+    // Build per-node topic arrays
+    const nodes: { topics: { name: string }[] }[] = [];
+    for (let i = 0; i < nodeCount; i++) nodes.push({ topics: [] });
+
+    const randNode = () => Math.random() * nodeCount | 0;
+    const pickN = (count: number): number[] => {
+      const picked = new Set<number>();
+      while (picked.size < count) picked.add(randNode());
+      return [...picked];
+    };
+
+    // Distribute regular topics: each assigned to 1–min(3, nodeCount) random nodes
+    const maxFanout = Math.min(3, nodeCount);
+    for (let i = 0; i < topicCount; i++) {
+      const name = genTopicName(i);
+      const fanout = 1 + (Math.random() * maxFanout | 0); // 1..maxFanout inclusive
+      for (const n of pickN(fanout)) nodes[n].topics.push({ name });
+    }
+
+    // Generate and distribute colliding topic groups
+    for (let g = 0; g < collidingCount; g++) {
+      const targetSid = 10000 + g;
+      const [nameA, nameB] = findCollidingPair(targetSid);
+      // Shuffle node indices and split into two groups for the two names
+      const indices = Array.from({ length: nodeCount }, (_, i) => i);
+      for (let i = indices.length - 1; i > 0; i--) {
+        const j = Math.random() * (i + 1) | 0;
+        [indices[i], indices[j]] = [indices[j], indices[i]];
+      }
+      const half = Math.max(1, nodeCount >> 1);
+      for (let i = 0; i < nodeCount; i++) {
+        nodes[indices[i]].topics.push({ name: i < half ? nameA : nameB });
+      }
+    }
+
+    const obj: any = {
+      seed: seed >>> 0,
+      nodes: nodes.map(n => n.topics.length > 0 ? { topics: n.topics } : {}),
+    };
+    this.configTextarea.value = compactJSON(obj);
+    this.syncHighlight();
   }
 
   private handleNodeBlockTopicHover(nid: number, hash: bigint | null, name: string | null): void {

@@ -276,13 +276,27 @@
   #topic-resize:hover { background: #666; }
 
   #side-panel {
-    width: 200px;
+    width: 320px;
     background: #262626;
     border-left: 1px solid #444;
     padding: 12px;
     overflow-y: auto;
     flex-shrink: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
   }
+  #side-resize {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 10;
+  }
+  #side-resize:hover { background: #666; }
 
   #status-bar {
     height: 20px;
@@ -314,6 +328,11 @@
   #timeline-resize-handle:active {
     background: rgba(255,255,255,0.15);
   }
+  .jk { color: #9cdcfe; }
+  .js { color: #ce9178; }
+  .jn { color: #b5cea8; }
+  .jb { color: #569cd6; }
+
   #timeline-canvas { display: block; width: 100%; height: calc(100% - 5px); touch-action: none; }
   #timeline-tooltip, #sim-tooltip {
     position: absolute; display: none; pointer-events: none;
@@ -334,7 +353,7 @@
       </div>
       <div id="sim-tooltip"></div>
     </div>
-    <div id="side-panel"></div>
+    <div id="side-panel"><div id="side-resize"></div></div>
   </div>
   <div id="timeline-container">
     <div id="timeline-resize-handle"></div>

@@ -4,6 +4,7 @@
 
 import { NetworkConfig, EventRecord } from "./types.js";
 import { Simulation, SimState } from "./sim.js";
+import { LAGE_MIN } from "./constants.js";
 import { Renderer } from "./render.js";
 import { UI } from "./ui.js";
 import { EventLog } from "./event-log.js";
@@ -183,8 +184,22 @@ function navigateTo(index: number): void {
   renderCurrent();
 }
 
-function resetWithSeed(seed: number): void {
-  sim = createSim(seed);
+function resetWithConfig(config: { seed: number; network?: { delay_us?: [number, number]; loss_probability?: number }; nodes: { topics?: { name: string; evictions?: number; lage?: number }[] }[] }): void {
+  const net: NetworkConfig = {
+    delayUs: config.network?.delay_us ?? [1_000, 10_000],
+    lossProbability: config.network?.loss_probability ?? 0.0,
+  };
+  const s = new Simulation(net, config.seed);
+  config.nodes.forEach((n, i) => {
+    s.addNode(i);
+    if (n.topics) {
+      for (const t of n.topics) {
+        s.addTopicToNode(i, t.name, undefined, t.evictions ?? 0, t.lage ?? LAGE_MIN);
+      }
+    }
+  });
+  s.pendingEvents.length = 0;
+  sim = s;
   ui.setSim(sim);
   history = [];
   historyTimes = [];
@@ -246,15 +261,13 @@ function init(): void {
 
   ui.setTimeline(timeline);
   ui.onRelayout = relayout;
-  ui.onApplySeed = resetWithSeed;
+  ui.onApplyConfig = resetWithConfig;
   ui.onFitView = zoomToFit;
   ui.onUserInteraction = () => {
     const pendingEvents = sim.drainPendingEvents();
     saveSnapshot(pendingEvents);
     renderCurrent();
   };
-  ui.setSeedDisplay(sim.seed);
-
   timeline.onNavigate = navigateTo;
   timeline.isPlaying = () => ui.playing;
 
