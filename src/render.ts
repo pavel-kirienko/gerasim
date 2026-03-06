@@ -203,8 +203,8 @@ export class Renderer {
       const focused = this.focusedTopicHash;
       if (focused !== null) {
         if (bc.event.topicHash === focused) { /* full alpha */ }
-        else if (bc.event.topicHash === 0n) alpha *= 0.4;
-        else alpha *= 0.4;
+        else if (bc.event.topicHash === 0n) alpha *= 0.3;
+        else alpha *= 0.3;
       }
 
       ctx.save();
@@ -285,8 +285,8 @@ export class Renderer {
       const focused = this.focusedTopicHash;
       if (focused !== null) {
         if (ev.topicHash === focused) { /* full alpha */ }
-        else if (ev.topicHash === 0n) alpha *= 0.4;
-        else alpha *= 0.4;
+        else if (ev.topicHash === 0n) alpha *= 0.3;
+        else alpha *= 0.3;
       }
 
       if (timeUs < msg.arriveUs) {

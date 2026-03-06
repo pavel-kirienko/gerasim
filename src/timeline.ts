@@ -304,11 +304,11 @@ export class Timeline {
       const sy = (sRow + 1) * ROW_H + ROW_H / 2;
       if (sy > contentH) continue;
 
-      let arrowAlpha = 0.3;
+      let arrowAlpha = 0.5;
       if (ftHash !== null) {
         if (ev.topicHash === ftHash) { /* full */ }
-        else if (ev.topicHash === 0n) arrowAlpha *= 0.3;
-        else arrowAlpha *= 0.3;
+        else if (ev.topicHash === 0n) arrowAlpha *= 0.2;
+        else arrowAlpha *= 0.2;
       }
 
       const color = CODE_COLORS[ev.code];
