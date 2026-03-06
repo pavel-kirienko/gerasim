@@ -41,6 +41,7 @@ jobs:
           HASH=$(git rev-parse --short HEAD)
           sed "s|dist/main.js|dist/main.js?v=$HASH|g" index.html > _site/index.html
           cp -r dist _site/
+          cp -r static _site/
           echo 'gerasim.opencyphal.org' > _site/CNAME
 
       - uses: actions/upload-pages-artifact@v3

@@ -155,14 +155,14 @@ describe("simulation integration", () => {
     }
   });
 
-  it("node restart: clears topics, node comes back online", () => {
+  it("node restart: keeps topics, node comes back online", () => {
     const sim = makeSim();
     sim.addNode();
     sim.stepUntil(1);
     sim.addTopicToNode(0, "topic/a");
     expect(sim.nodes.get(0)!.topics.size).toBe(1);
     sim.restartNode(0);
-    expect(sim.nodes.get(0)!.topics.size).toBe(0);
+    expect(sim.nodes.get(0)!.topics.size).toBe(1);
     expect(sim.nodes.get(0)!.online).toBe(false);
     stepSeconds(sim, 5);
     expect(sim.nodes.get(0)!.online).toBe(true);

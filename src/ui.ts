@@ -247,8 +247,20 @@ export class UI {
     const logo = document.createElement("img");
     logo.src = "static/opencyphal-dark.png";
     logo.style.width = "100%";
-    logo.style.marginBottom = "12px";
+    logo.style.marginBottom = "4px";
     panel.appendChild(logo);
+
+    const ghLink = document.createElement("a");
+    ghLink.href = "https://github.com/pavel-kirienko/gerasim";
+    ghLink.target = "_blank";
+    ghLink.textContent = "Sources & issues on GitHub";
+    ghLink.style.fontSize = "11px";
+    ghLink.style.color = "#aaa";
+    ghLink.style.textDecoration = "none";
+    ghLink.style.display = "block";
+    ghLink.style.textAlign = "center";
+    ghLink.style.marginBottom = "12px";
+    panel.appendChild(ghLink);
 
     // Legend
     const legendTitle = document.createElement("div");
