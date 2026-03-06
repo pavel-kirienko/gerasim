@@ -48,6 +48,7 @@ export class Timeline {
   private ctx: CanvasRenderingContext2D;
   private tooltip: HTMLElement;
   private eventLog: EventLog;
+  focusedTopicHash: bigint | null = null;
 
   private viewStartUs = 0;
   private viewEndUs = 10_000_000; // 10s default
@@ -180,12 +181,12 @@ export class Timeline {
       const y = (i + 1) * ROW_H + ROW_H / 2;
       if (y > contentH) break;
       const active = this.activeNodeIds.has(this.nodeIds[i]);
-      ctx.fillStyle = active ? "#888" : "#444";
+      ctx.fillStyle = active ? "#fff" : "#555";
       ctx.fillText(`Node${this.nodeIds[i]}`, GUTTER_W - 4, y);
     }
 
     // Convergence row label
-    ctx.fillStyle = "#888";
+    ctx.fillStyle = "#fff";
     ctx.fillText("Net", GUTTER_W - 4, ROW_H / 2);
 
     // Row grid lines
@@ -216,6 +217,7 @@ export class Timeline {
     ctx.font = MARKER_FONT;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
+    const ftHash = this.focusedTopicHash;
     for (const ev of this.eventLog.events) {
       const x = this.eventX(ev);
       if (x < GUTTER_W - 10 || x > W + 10) continue;
@@ -225,8 +227,14 @@ export class Timeline {
       if (y > contentH) continue;
 
       const active = this.activeNodeIds.has(ev.nodeId);
+      let baseAlpha = active ? 1.0 : 0.35;
+      if (ftHash !== null) {
+        if (ev.topicHash === ftHash) { /* full */ }
+        else if (ev.topicHash === 0n) baseAlpha *= 0.3;
+        else baseAlpha *= 0.3;
+      }
       const color = CODE_COLORS[ev.code];
-      ctx.globalAlpha = active ? 1.0 : 0.35;
+      ctx.globalAlpha = baseAlpha;
       ctx.fillStyle = color;
       const top = ev.code[0];
       const bot = ev.code[1];
@@ -286,6 +294,7 @@ export class Timeline {
 
   private drawCausalArrows(ctx: CanvasRenderingContext2D, contentH: number): void {
     const W = this.logicalW;
+    const ftHash = this.focusedTopicHash;
     for (const ev of this.eventLog.events) {
       if (ev.receiveIds.length === 0) continue;
       const sx = this.eventX(ev);
@@ -295,10 +304,17 @@ export class Timeline {
       const sy = (sRow + 1) * ROW_H + ROW_H / 2;
       if (sy > contentH) continue;
 
+      let arrowAlpha = 0.3;
+      if (ftHash !== null) {
+        if (ev.topicHash === ftHash) { /* full */ }
+        else if (ev.topicHash === 0n) arrowAlpha *= 0.3;
+        else arrowAlpha *= 0.3;
+      }
+
       const color = CODE_COLORS[ev.code];
       ctx.save();
       ctx.strokeStyle = color;
-      ctx.globalAlpha = 0.3;
+      ctx.globalAlpha = arrowAlpha;
       ctx.lineWidth = 1;
 
       for (const rid of ev.receiveIds) {

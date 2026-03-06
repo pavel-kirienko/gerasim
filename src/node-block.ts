@@ -16,7 +16,7 @@ export interface NodeBlockCallbacks {
   onChangeEvictions(nid: number, hash: bigint, delta: number): void;
   onChangeLage(nid: number, hash: bigint, delta: number): void;
   onDragMove(nid: number, dx: number, dy: number): void;
-  onTopicHover(nid: number, hash: bigint | null): void;
+  onTopicHover(nid: number, hash: bigint | null, name: string | null): void;
 }
 
 export class NodeBlock {
@@ -235,8 +235,8 @@ export class NodeBlock {
       tdDel.appendChild(delBtn);
 
       tr.append(tdName, tdSid, tdEv, tdLage, tdDel);
-      tr.addEventListener("mouseenter", () => this.callbacks.onTopicHover(this.nodeId, t.hash));
-      tr.addEventListener("mouseleave", () => this.callbacks.onTopicHover(this.nodeId, null));
+      tr.addEventListener("mouseenter", () => this.callbacks.onTopicHover(this.nodeId, t.hash, t.name));
+      tr.addEventListener("mouseleave", () => this.callbacks.onTopicHover(this.nodeId, null, null));
       this.topicsBody.appendChild(tr);
     }
   }

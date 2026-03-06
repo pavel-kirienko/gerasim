@@ -13,7 +13,7 @@
   html, body { height: 100%; overflow: hidden; }
   body {
     background: #1e1e1e;
-    color: #e0e0e0;
+    color: #fff;
     font-family: "Ubuntu Mono", "Consolas", monospace;
     font-size: 12px;
     display: flex;
@@ -76,7 +76,7 @@
     background: #2a2a2a;
     border: 1px solid #555;
     border-radius: 6px;
-    color: #e0e0e0;
+    color: #fff;
     font-size: 10px;
     pointer-events: auto;
     user-select: none;
@@ -115,7 +115,7 @@
     font: 9px "Ubuntu Mono", monospace;
     border: 1px solid #666;
     border-radius: 3px;
-    color: #eee;
+    color: #fff;
     background: #555;
   }
   .nb-header button:hover { filter: brightness(1.3); }
@@ -126,7 +126,7 @@
   .nb-status {
     padding: 2px 6px;
     font-size: 9px;
-    color: #aaa;
+    color: #fff;
     border-bottom: 1px solid #444;
   }
 
@@ -168,7 +168,7 @@
     cursor: pointer;
     font: 9px "Ubuntu Mono", monospace;
     background: #444;
-    color: #ddd;
+    color: #fff;
     border: 1px solid #555;
     border-radius: 2px;
     line-height: 1;
@@ -229,7 +229,7 @@
   #topic-panel th {
     background: #2a2a2a;
     position: sticky;
-    top: 0;
+    top: 21px;
     z-index: 2;
     font-weight: bold;
   }
@@ -246,7 +246,21 @@
   .cell-stale { background: #5c5c10 !important; }
   .cell-highlighted { background: #4a148c !important; }
   .cell-line1 { font-size: 9px; }
-  .cell-line2 { font-size: 9px; color: #aaa; }
+  .cell-line2 { font-size: 9px; color: #fff; }
+  #topic-panel tr.row-highlight > td { background: rgba(255,255,255,0.04); }
+  #topic-panel .col-highlight { background: rgba(255,255,255,0.04); }
+  #topic-panel td:first-child.col-highlight,
+  #topic-panel tr.row-highlight > td:first-child { background: #333; }
+  #topic-panel caption {
+    text-align: left;
+    padding: 4px;
+    font-weight: bold;
+    font-size: 13px;
+    background: #222;
+    position: sticky;
+    top: 0;
+    z-index: 4;
+  }
 
   #topic-resize {
     position: absolute;
@@ -269,6 +283,20 @@
     flex-shrink: 0;
   }
 
+  #status-bar {
+    height: 20px;
+    line-height: 20px;
+    background: #2a2a2a;
+    border-top: 1px solid #444;
+    padding: 0 8px;
+    font-size: 13px;
+    color: #fff;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   #timeline-container {
     height: 180px;
     background: #1a1a1a;
@@ -289,7 +317,7 @@
   #timeline-tooltip, #sim-tooltip {
     position: absolute; display: none; pointer-events: none;
     background: #333; border: 1px solid #555; padding: 4px 8px;
-    font-size: 11px; color: #eee; border-radius: 3px; z-index: 10;
+    font-size: 11px; color: #fff; border-radius: 3px; z-index: 10;
     white-space: pre;
   }
 </style>
@@ -312,6 +340,7 @@
     <canvas id="timeline-canvas"></canvas>
     <div id="timeline-tooltip"></div>
   </div>
+  <div id="status-bar"></div>
   <script type="module" src="dist/main.js"></script>
 </body>
 </html>

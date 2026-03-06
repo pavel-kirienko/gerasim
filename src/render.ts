@@ -40,6 +40,7 @@ export class Renderer {
   private externalBoxSizes: Map<number, { w: number; h: number }> = new Map();
   private lastSnaps: Map<number, NodeSnapshot> = new Map();
   private lastTimeUs = 0;
+  focusedTopicHash: bigint | null = null;
 
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
@@ -195,8 +196,16 @@ export class Renderer {
       // Radius expands at PROPAGATION_SPEED px per sim-second
       const radius = PROPAGATION_SPEED * (elapsed / 1_000_000);
       // Slow fade: stay bright for first 60%, then fade out
-      const alpha = frac < 0.6 ? 0.8 : Math.max(0, 0.8 * (1 - (frac - 0.6) / 0.4));
+      let alpha = frac < 0.6 ? 0.8 : Math.max(0, 0.8 * (1 - (frac - 0.6) / 0.4));
       const lw = 3.0 - frac * 2.0;
+
+      // Dim if a topic is focused and this broadcast doesn't match
+      const focused = this.focusedTopicHash;
+      if (focused !== null) {
+        if (bc.event.topicHash === focused) { /* full alpha */ }
+        else if (bc.event.topicHash === 0n) alpha *= 0.4;
+        else alpha *= 0.4;
+      }
 
       ctx.save();
       ctx.globalAlpha = alpha;
@@ -207,7 +216,8 @@ export class Renderer {
       ctx.stroke();
       ctx.restore();
 
-      // Info box near source node
+      // Info box near source node — skip if dimmed
+      if (focused !== null && bc.event.topicHash !== focused) continue;
       const d = bc.event.details || {};
       const bName = (d.name as string) || "?";
       const bSid = d.subjectId as number ?? "?";
@@ -261,26 +271,39 @@ export class Renderer {
       let headX: number, headY: number;
 
       if (timeUs < msg.arriveUs) {
-        // Travel phase: arrow head moves along the curve
         const travelDuration = msg.arriveUs - msg.startUs;
         const travelFrac = Math.min(1, (timeUs - msg.startUs) / (travelDuration || 1));
         alpha = 0.9;
+      } else {
+        const lingerTotal = msg.expireUs - msg.arriveUs;
+        const lingerElapsed = timeUs - msg.arriveUs;
+        const lingerFrac = lingerTotal > 0 ? lingerElapsed / lingerTotal : 1;
+        alpha = lingerFrac < 0.7 ? 0.9 : Math.max(0.1, 0.9 * (1 - (lingerFrac - 0.7) / 0.3));
+      }
+
+      // Dim if a topic is focused and this arrow doesn't match
+      const focused = this.focusedTopicHash;
+      if (focused !== null) {
+        if (ev.topicHash === focused) { /* full alpha */ }
+        else if (ev.topicHash === 0n) alpha *= 0.4;
+        else alpha *= 0.4;
+      }
+
+      if (timeUs < msg.arriveUs) {
+        const travelDuration = msg.arriveUs - msg.startUs;
+        const travelFrac = Math.min(1, (timeUs - msg.startUs) / (travelDuration || 1));
         [headX, headY] = this.drawPartialBezierArrow(
           ctx, x0, y0, cpx, cpy, x1, y1, travelFrac,
           color, lineWidth, alpha, dashed,
         );
       } else {
-        // Linger phase: full arrow, fading
-        const lingerTotal = msg.expireUs - msg.arriveUs;
-        const lingerElapsed = timeUs - msg.arriveUs;
-        const lingerFrac = lingerTotal > 0 ? lingerElapsed / lingerTotal : 1;
-        alpha = lingerFrac < 0.7 ? 0.9 : Math.max(0.1, 0.9 * (1 - (lingerFrac - 0.7) / 0.3));
         this.drawArrow(ctx, x0, y0, x1, y1, color, lineWidth, alpha, dashed);
         headX = x1;
         headY = y1;
       }
 
-      // Info box near arrowhead
+      // Info box near arrowhead — skip if dimmed
+      if (focused !== null && ev.topicHash !== focused) continue;
       const ldx = headX - x0, ldy = headY - y0;
       const llen = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
       const lnx = -ldy / llen, lny = ldx / llen;
