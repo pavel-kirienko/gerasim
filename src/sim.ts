@@ -1,23 +1,32 @@
 // ---------------------------------------------------------------------------
-// Simulation engine -- cy.c-aligned CRDT core model
+// Simulation engine -- model-aligned CRDT core
 // ---------------------------------------------------------------------------
 
 import {
-  NetworkConfig, Topic, GossipPeer, DedupEntry, Node,
-  EventRecord, TopicSnap, PeerSnap, NodeSnapshot,
+  NetworkConfig,
+  Topic,
+  Node,
+  TopicScheduleState,
+  PendingUrgentGossip,
+  EventRecord,
+  TopicSnap,
+  NodeSnapshot,
 } from "./types.js";
 import {
-  GOSSIP_PERIOD, GOSSIP_TTL, GOSSIP_OUTDEGREE,
-  GOSSIP_PERIODIC_UNICAST_PERIOD, GOSSIP_PERIODIC_UNICAST_TTL,
-  GOSSIP_PEER_COUNT, GOSSIP_DEDUP_CAP, GOSSIP_DEDUP_TIMEOUT,
-  GOSSIP_PEER_STALE, GOSSIP_PEER_ELIGIBLE,
-  GOSSIP_PEER_REPLACEMENT_PROBABILITY_RECIPROCAL,
-  SUBJECT_ID_PINNED_MAX, SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX,
+  DEFAULT_GOSSIP_BROADCAST_FRACTION,
+  DEFAULT_GOSSIP_DITHER,
+  DEFAULT_GOSSIP_PERIOD,
+  DEFAULT_GOSSIP_STARTUP_DELAY,
+  DEFAULT_GOSSIP_URGENT_DELAY,
+  DEFAULT_SHARD_COUNT,
+  SUBJECT_ID_MODULUS,
+  LAGE_MIN,
+  LAGE_MAX,
   PROPAGATION_SPEED,
+  SPIN_BLOCK_MAX,
 } from "./constants.js";
 
-const U64_MASK = 0xFFFF_FFFF_FFFF_FFFFn;
-const BIG_BANG = Number.MIN_SAFE_INTEGER;
+const U64_MASK = 0xffff_ffff_ffff_ffffn;
 const HEAT_DEATH = Number.MAX_SAFE_INTEGER;
 
 enum CrdtMergeOutcome {
@@ -30,8 +39,17 @@ function asU64(x: bigint): bigint {
   return x & U64_MASK;
 }
 
-function isPinned(hash: bigint): boolean {
-  return hash <= BigInt(SUBJECT_ID_PINNED_MAX);
+function isPrime(n: number): boolean {
+  const x = Math.floor(n);
+  if (x <= 1) return false;
+  if (x <= 3) return true;
+  if (x % 2 === 0 || x % 3 === 0) return false;
+  for (let i = 5; i * i <= x; i += 6) {
+    if (x % i === 0 || x % (i + 2) === 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,11 +63,15 @@ export class Rng {
     this.state = seed | 0;
   }
 
-  getState(): number { return this.state; }
-  setState(s: number): void { this.state = s; }
+  getState(): number {
+    return this.state;
+  }
+  setState(s: number): void {
+    this.state = s;
+  }
 
   random(): number {
-    let t = (this.state += 0x6D2B79F5);
+    let t = (this.state += 0x6d2b79f5);
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -94,7 +116,9 @@ export interface SimEvent {
 export class MinHeap {
   private data: SimEvent[] = [];
 
-  get length(): number { return this.data.length; }
+  get length(): number {
+    return this.data.length;
+  }
 
   push(ev: SimEvent): void {
     this.data.push(ev);
@@ -165,12 +189,9 @@ export class MinHeap {
 // ---------------------------------------------------------------------------
 
 export function subjectId(topicHash: bigint, evictions: number, modulus: number): number {
-  if (isPinned(topicHash)) {
-    return Number(topicHash);
-  }
   const e = BigInt(Math.max(0, Math.floor(evictions)));
   const sq = asU64(e * e);
-  const sid = BigInt(SUBJECT_ID_PINNED_MAX + 1) + (asU64(topicHash + sq) % BigInt(modulus));
+  const sid = asU64(topicHash + sq) % BigInt(Math.max(2, Math.floor(modulus)));
   return Number(sid);
 }
 
@@ -179,6 +200,10 @@ export function leftWins(lLage: number, lHash: bigint, rLage: number, rHash: big
     return lLage > rLage;
   }
   return lHash < rHash;
+}
+
+function leftWinsDivergence(lLage: number, lEvictions: number, rLage: number, rEvictions: number): boolean {
+  return lLage > rLage || (lLage === rLage && lEvictions > rEvictions);
 }
 
 function log2Floor(x: number): number {
@@ -206,12 +231,12 @@ export function topicLage(tsCreatedUs: number, nowUs: number): number {
 }
 
 function topicMergeLage(topic: Topic, nowUs: number, remoteLage: number): void {
-  const rLage = Math.max(LAGE_MIN, Math.min(remoteLage, LAGE_MAX));
-  topic.tsCreatedUs = Math.min(topic.tsCreatedUs, nowUs - (pow2us(rLage) * 1_000_000));
+  const rLage = Math.floor(remoteLage);
+  topic.tsCreatedUs = Math.min(topic.tsCreatedUs, nowUs - pow2us(rLage) * 1_000_000);
 }
 
-function topicSubjectId(t: Topic): number {
-  return subjectId(t.hash, t.evictions, SUBJECT_ID_MODULUS);
+function topicSubjectId(t: Topic, modulus: number): number {
+  return subjectId(t.hash, t.evictions, modulus);
 }
 
 function parseHashOverride(name: string): bigint | null {
@@ -219,7 +244,8 @@ function parseHashOverride(name: string): bigint | null {
   const maxNibbles = Math.min(name.length, 17);
   for (let i = 0; i < maxNibbles; i++) {
     const ch = name.charCodeAt(name.length - i - 1);
-    if (ch === 35) { // '#'
+    if (ch === 35) {
+      // '#'
       return i > 0 ? out : null;
     }
     let digit = -1;
@@ -238,9 +264,9 @@ function parseHashOverride(name: string): bigint | null {
 function rapidRead32LE(bytes: Uint8Array, offset: number): bigint {
   return BigInt(
     (bytes[offset] ?? 0) |
-    ((bytes[offset + 1] ?? 0) << 8) |
-    ((bytes[offset + 2] ?? 0) << 16) |
-    ((bytes[offset + 3] ?? 0) << 24),
+      ((bytes[offset + 1] ?? 0) << 8) |
+      ((bytes[offset + 2] ?? 0) << 16) |
+      ((bytes[offset + 3] ?? 0) << 24),
   );
 }
 
@@ -309,12 +335,30 @@ function rapidhashInternal(bytes: Uint8Array): bigint {
 
       do {
         seed = rapidMix(asU64(rapidRead64LE(bytes, p) ^ RAPID_SECRET[0]), asU64(rapidRead64LE(bytes, p + 8) ^ seed));
-        see1 = rapidMix(asU64(rapidRead64LE(bytes, p + 16) ^ RAPID_SECRET[1]), asU64(rapidRead64LE(bytes, p + 24) ^ see1));
-        see2 = rapidMix(asU64(rapidRead64LE(bytes, p + 32) ^ RAPID_SECRET[2]), asU64(rapidRead64LE(bytes, p + 40) ^ see2));
-        see3 = rapidMix(asU64(rapidRead64LE(bytes, p + 48) ^ RAPID_SECRET[3]), asU64(rapidRead64LE(bytes, p + 56) ^ see3));
-        see4 = rapidMix(asU64(rapidRead64LE(bytes, p + 64) ^ RAPID_SECRET[4]), asU64(rapidRead64LE(bytes, p + 72) ^ see4));
-        see5 = rapidMix(asU64(rapidRead64LE(bytes, p + 80) ^ RAPID_SECRET[5]), asU64(rapidRead64LE(bytes, p + 88) ^ see5));
-        see6 = rapidMix(asU64(rapidRead64LE(bytes, p + 96) ^ RAPID_SECRET[6]), asU64(rapidRead64LE(bytes, p + 104) ^ see6));
+        see1 = rapidMix(
+          asU64(rapidRead64LE(bytes, p + 16) ^ RAPID_SECRET[1]),
+          asU64(rapidRead64LE(bytes, p + 24) ^ see1),
+        );
+        see2 = rapidMix(
+          asU64(rapidRead64LE(bytes, p + 32) ^ RAPID_SECRET[2]),
+          asU64(rapidRead64LE(bytes, p + 40) ^ see2),
+        );
+        see3 = rapidMix(
+          asU64(rapidRead64LE(bytes, p + 48) ^ RAPID_SECRET[3]),
+          asU64(rapidRead64LE(bytes, p + 56) ^ see3),
+        );
+        see4 = rapidMix(
+          asU64(rapidRead64LE(bytes, p + 64) ^ RAPID_SECRET[4]),
+          asU64(rapidRead64LE(bytes, p + 72) ^ see4),
+        );
+        see5 = rapidMix(
+          asU64(rapidRead64LE(bytes, p + 80) ^ RAPID_SECRET[5]),
+          asU64(rapidRead64LE(bytes, p + 88) ^ see5),
+        );
+        see6 = rapidMix(
+          asU64(rapidRead64LE(bytes, p + 96) ^ RAPID_SECRET[6]),
+          asU64(rapidRead64LE(bytes, p + 104) ^ see6),
+        );
         p += 112;
         i -= 112;
       } while (i > 112);
@@ -330,15 +374,30 @@ function rapidhashInternal(bytes: Uint8Array): bigint {
     if (i > 16) {
       seed = rapidMix(asU64(rapidRead64LE(bytes, p) ^ RAPID_SECRET[2]), asU64(rapidRead64LE(bytes, p + 8) ^ seed));
       if (i > 32) {
-        seed = rapidMix(asU64(rapidRead64LE(bytes, p + 16) ^ RAPID_SECRET[2]), asU64(rapidRead64LE(bytes, p + 24) ^ seed));
+        seed = rapidMix(
+          asU64(rapidRead64LE(bytes, p + 16) ^ RAPID_SECRET[2]),
+          asU64(rapidRead64LE(bytes, p + 24) ^ seed),
+        );
         if (i > 48) {
-          seed = rapidMix(asU64(rapidRead64LE(bytes, p + 32) ^ RAPID_SECRET[1]), asU64(rapidRead64LE(bytes, p + 40) ^ seed));
+          seed = rapidMix(
+            asU64(rapidRead64LE(bytes, p + 32) ^ RAPID_SECRET[1]),
+            asU64(rapidRead64LE(bytes, p + 40) ^ seed),
+          );
           if (i > 64) {
-            seed = rapidMix(asU64(rapidRead64LE(bytes, p + 48) ^ RAPID_SECRET[1]), asU64(rapidRead64LE(bytes, p + 56) ^ seed));
+            seed = rapidMix(
+              asU64(rapidRead64LE(bytes, p + 48) ^ RAPID_SECRET[1]),
+              asU64(rapidRead64LE(bytes, p + 56) ^ seed),
+            );
             if (i > 80) {
-              seed = rapidMix(asU64(rapidRead64LE(bytes, p + 64) ^ RAPID_SECRET[2]), asU64(rapidRead64LE(bytes, p + 72) ^ seed));
+              seed = rapidMix(
+                asU64(rapidRead64LE(bytes, p + 64) ^ RAPID_SECRET[2]),
+                asU64(rapidRead64LE(bytes, p + 72) ^ seed),
+              );
               if (i > 96) {
-                seed = rapidMix(asU64(rapidRead64LE(bytes, p + 80) ^ RAPID_SECRET[1]), asU64(rapidRead64LE(bytes, p + 88) ^ seed));
+                seed = rapidMix(
+                  asU64(rapidRead64LE(bytes, p + 80) ^ RAPID_SECRET[1]),
+                  asU64(rapidRead64LE(bytes, p + 88) ^ seed),
+                );
               }
             }
           }
@@ -353,7 +412,7 @@ function rapidhashInternal(bytes: Uint8Array): bigint {
   a = asU64(a ^ RAPID_SECRET[1]);
   b = asU64(b ^ seed);
   [a, b] = rapidMum(a, b);
-  return rapidMix(asU64(a ^ RAPID_SECRET[7]), asU64((b ^ RAPID_SECRET[1]) ^ BigInt(i)));
+  return rapidMix(asU64(a ^ RAPID_SECRET[7]), asU64(b ^ RAPID_SECRET[1] ^ BigInt(i)));
 }
 
 const textEncoder = new TextEncoder();
@@ -371,43 +430,25 @@ export function topicHash(name: string): bigint {
 // ---------------------------------------------------------------------------
 
 export function makeNode(nodeId: number): Node {
-  const dedup: DedupEntry[] = [];
-  for (let i = 0; i < GOSSIP_DEDUP_CAP; i++) {
-    dedup.push({ hash: 0n, lastSeenUs: BIG_BANG });
-  }
-  const peers: (GossipPeer | null)[] = [];
-  for (let i = 0; i < GOSSIP_PEER_COUNT; i++) {
-    peers.push(null);
-  }
   return {
     nodeId,
     online: false,
     topics: new Map(),
-    gossipQueue: [],
-    gossipUrgent: [],
-    peers,
-    dedup,
-    gossipNextUs: HEAT_DEATH,
-    gossipPeriodicNextUs: HEAT_DEATH,
+    topicScheduleByHash: new Map(),
+    pendingUrgentByHash: new Map(),
     gossipPollScheduledUs: HEAT_DEATH,
-    gossipPeriodUs: GOSSIP_PERIOD,
     partitionSet: "A",
-    peerReplacementMoratoriumUntil: BIG_BANG,
     lastUrgentUs: 0,
   };
 }
 
 export function nodeAddTopic(node: Node, topic: Topic): void {
   node.topics.set(topic.hash, topic);
-  if (!node.gossipQueue.includes(topic.hash)) {
-    node.gossipQueue.push(topic.hash);
-  }
 }
 
-export function nodeFindBySubjectId(node: Node, sid: number): Topic | null {
+export function nodeFindBySubjectId(node: Node, sid: number, modulus = SUBJECT_ID_MODULUS): Topic | null {
   for (const t of node.topics.values()) {
-    if (isPinned(t.hash)) continue;
-    if (topicSubjectId(t) === sid) {
+    if (topicSubjectId(t, modulus) === sid) {
       return t;
     }
   }
@@ -444,9 +485,30 @@ export class Simulation {
   pendingEvents: EventRecord[] = [];
 
   constructor(net: NetworkConfig, rngSeed = 42) {
+    const protocol = net.protocol ?? ({} as NetworkConfig["protocol"]);
+    const subjectIdModulus = Math.floor(protocol.subjectIdModulus ?? SUBJECT_ID_MODULUS);
+    if (!isPrime(subjectIdModulus)) {
+      throw new Error(`subjectIdModulus must be prime, got ${subjectIdModulus}`);
+    }
+    const shardCount = Math.floor(protocol.shardCount ?? DEFAULT_SHARD_COUNT);
+    if (shardCount <= 0) {
+      throw new Error("shardCount must be positive");
+    }
     this.net = {
-      ...net,
-      periodicUnicastEnabled: net.periodicUnicastEnabled ?? false,
+      delay: net.delay,
+      lossProbability: net.lossProbability,
+      protocol: {
+        subjectIdModulus,
+        shardCount,
+        gossipStartupDelay: Math.max(0, protocol.gossipStartupDelay ?? DEFAULT_GOSSIP_STARTUP_DELAY),
+        gossipPeriod: Math.max(0, protocol.gossipPeriod ?? DEFAULT_GOSSIP_PERIOD),
+        gossipDither: Math.max(0, protocol.gossipDither ?? DEFAULT_GOSSIP_DITHER),
+        gossipBroadcastFraction: Math.max(
+          0,
+          Math.min(1, protocol.gossipBroadcastFraction ?? DEFAULT_GOSSIP_BROADCAST_FRACTION),
+        ),
+        gossipUrgentDelay: Math.max(0, protocol.gossipUrgentDelay ?? DEFAULT_GOSSIP_URGENT_DELAY),
+      },
     };
     this.seed = rngSeed;
     this.rng = new Rng(rngSeed);
@@ -459,24 +521,26 @@ export class Simulation {
       for (const [h, t] of n.topics) {
         topics.set(h, { ...t });
       }
+      const topicScheduleByHash = new Map<bigint, TopicScheduleState>();
+      for (const [h, s] of n.topicScheduleByHash) {
+        topicScheduleByHash.set(h, { ...s });
+      }
+      const pendingUrgentByHash = new Map<bigint, PendingUrgentGossip>();
+      for (const [h, u] of n.pendingUrgentByHash) {
+        pendingUrgentByHash.set(h, { ...u });
+      }
       nodes.set(id, {
         nodeId: n.nodeId,
         online: n.online,
         topics,
-        gossipQueue: n.gossipQueue.slice(),
-        gossipUrgent: n.gossipUrgent.slice(),
-        peers: n.peers.map(p => (p ? { ...p } : null)),
-        dedup: n.dedup.map(d => ({ ...d })),
-        gossipNextUs: n.gossipNextUs,
-        gossipPeriodicNextUs: n.gossipPeriodicNextUs,
+        topicScheduleByHash,
+        pendingUrgentByHash,
         gossipPollScheduledUs: n.gossipPollScheduledUs,
-        gossipPeriodUs: n.gossipPeriodUs,
         partitionSet: n.partitionSet,
-        peerReplacementMoratoriumUntil: n.peerReplacementMoratoriumUntil,
         lastUrgentUs: n.lastUrgentUs,
       });
     }
-    const queueData = this.queue.toArray().map(ev => ({ ...ev, payload: { ...ev.payload } }));
+    const queueData = this.queue.toArray().map((ev) => ({ ...ev, payload: { ...ev.payload } }));
     return {
       nowUs: this.nowUs,
       seq: this.seq,
@@ -500,25 +564,28 @@ export class Simulation {
       for (const [h, t] of n.topics) {
         topics.set(h, { ...t, sortOrder: t.sortOrder ?? t.tsCreatedUs });
       }
+      const topicScheduleByHash = new Map<bigint, TopicScheduleState>();
+      for (const [h, s] of n.topicScheduleByHash) {
+        topicScheduleByHash.set(h, { ...s });
+      }
+      const pendingUrgentByHash = new Map<bigint, PendingUrgentGossip>();
+      for (const [h, u] of n.pendingUrgentByHash) {
+        pendingUrgentByHash.set(h, { ...u });
+      }
+
       this.nodes.set(id, {
         nodeId: n.nodeId,
         online: n.online,
         topics,
-        gossipQueue: n.gossipQueue.slice(),
-        gossipUrgent: n.gossipUrgent.slice(),
-        peers: n.peers.map(p => (p ? { ...p } : null)),
-        dedup: n.dedup.map(d => ({ ...d })),
-        gossipNextUs: n.gossipNextUs,
-        gossipPeriodicNextUs: n.gossipPeriodicNextUs,
+        topicScheduleByHash,
+        pendingUrgentByHash,
         gossipPollScheduledUs: n.gossipPollScheduledUs,
-        gossipPeriodUs: n.gossipPeriodUs,
         partitionSet: n.partitionSet,
-        peerReplacementMoratoriumUntil: n.peerReplacementMoratoriumUntil,
         lastUrgentUs: n.lastUrgentUs,
       });
     }
 
-    const queueData = state.queueData.map(ev => ({ ...ev, payload: { ...ev.payload } }));
+    const queueData = state.queueData.map((ev) => ({ ...ev, payload: { ...ev.payload } }));
     this.queue = MinHeap.fromArray(queueData);
   }
 
@@ -546,8 +613,12 @@ export class Simulation {
       node.online = false;
       this.nodes.delete(nodeId);
       this.pendingEvents.push({
-        timeUs: this.nowUs, event: "node_expunged", src: nodeId, dst: null,
-        topicHash: 0n, details: {},
+        timeUs: this.nowUs,
+        event: "node_expunged",
+        src: nodeId,
+        dst: null,
+        topicHash: 0n,
+        details: {},
       });
     }
   }
@@ -561,34 +632,40 @@ export class Simulation {
       t.evictions = 0;
       t.tsCreatedUs = this.nowUs; // lage will compute to -1
     }
-    node.gossipQueue.length = 0;
-    node.gossipUrgent.length = 0;
-    // Re-enqueue all topics for gossip and re-allocate subject IDs
+    node.topicScheduleByHash.clear();
+    node.pendingUrgentByHash.clear();
+
+    // Re-allocate and re-schedule all topics.
     for (const t of node.topics.values()) {
-      node.gossipQueue.push(t.hash);
       this.topicAllocate(node, t, 0, this.nowUs);
+      this.ensureTopicScheduleEntry(node, t.hash);
     }
-    for (let i = 0; i < node.peers.length; i++) node.peers[i] = null;
-    for (const d of node.dedup) {
-      d.hash = 0n;
-      d.lastSeenUs = BIG_BANG;
-    }
-    node.gossipNextUs = HEAT_DEATH;
-    node.gossipPeriodicNextUs = HEAT_DEATH;
+
     node.gossipPollScheduledUs = HEAT_DEATH;
-    node.peerReplacementMoratoriumUntil = BIG_BANG;
     node.lastUrgentUs = 0;
     this.pushEvent(this.nowUs, "NODE_JOIN", { node_id: nodeId });
   }
 
   setPartition(nodeId: number, set: "A" | "B"): void {
     const node = this.nodes.get(nodeId);
-    if (node) node.partitionSet = set;
+    if (node) {
+      node.partitionSet = set;
+      this.ensurePollScheduled(node);
+    }
   }
 
-  addTopicToNode(nodeId: number, name?: string, targetSid?: number, initEvictions?: number, initLage?: number): Topic | null {
+  addTopicToNode(
+    nodeId: number,
+    name?: string,
+    targetSid?: number,
+    initEvictions?: number,
+    initLage?: number,
+  ): Topic | null {
     const node = this.nodes.get(nodeId);
     if (!node) return null;
+    if (node.topics.size >= Math.floor(this.net.protocol.subjectIdModulus / 2)) {
+      throw new Error("too many topics for this subjectIdModulus");
+    }
 
     if (name === undefined) {
       if (targetSid !== undefined) {
@@ -614,21 +691,23 @@ export class Simulation {
     const topic: Topic = { name, hash, evictions: ev, tsCreatedUs: tsCreated, sortOrder: tsCreated };
     nodeAddTopic(node, topic);
     this.topicAllocate(node, topic, topic.evictions, this.nowUs);
-    this.gossipBegin(node);
+    this.ensureTopicScheduleEntry(node, topic.hash);
+    this.ensurePollScheduled(node);
 
     this.pendingEvents.push({
-      timeUs: this.nowUs, event: "topic_new", src: nodeId, dst: null,
-      topicHash: hash, details: { name },
+      timeUs: this.nowUs,
+      event: "topic_new",
+      src: nodeId,
+      dst: null,
+      topicHash: hash,
+      details: { name },
     });
     return topic;
   }
 
   private findNameForSid(targetSid: number): string {
-    if (targetSid <= SUBJECT_ID_PINNED_MAX) {
-      return `topic/pinned#${targetSid.toString(16)}`;
-    }
-    const maxSid = SUBJECT_ID_PINNED_MAX + SUBJECT_ID_MODULUS;
-    const sid = Math.min(Math.max(targetSid, SUBJECT_ID_PINNED_MAX + 1), maxSid);
+    const modulus = this.net.protocol.subjectIdModulus;
+    const sid = Math.min(Math.max(targetSid, 0), modulus - 1);
     const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
     for (;;) {
       let name = "";
@@ -636,7 +715,7 @@ export class Simulation {
         name += alphabet[this.rng.randrange(alphabet.length)];
       }
       const hash = topicHash(name);
-      if (subjectId(hash, 0, SUBJECT_ID_MODULUS) === sid) {
+      if (subjectId(hash, 0, modulus) === sid) {
         return name;
       }
     }
@@ -650,9 +729,14 @@ export class Simulation {
     const newEv = Math.max(0, topic.evictions + delta);
     if (newEv === topic.evictions) return;
     this.topicAllocate(node, topic, newEv, this.nowUs);
+    this.ensurePollScheduled(node);
     this.pendingEvents.push({
-      timeUs: this.nowUs, event: "topic_adjust", src: nodeId, dst: null,
-      topicHash: hash, details: { name: topic.name, evictions: topic.evictions },
+      timeUs: this.nowUs,
+      event: "topic_adjust",
+      src: nodeId,
+      dst: null,
+      topicHash: hash,
+      details: { name: topic.name, evictions: topic.evictions },
     });
   }
 
@@ -666,8 +750,12 @@ export class Simulation {
     if (newLage === currentLage) return;
     topic.tsCreatedUs = this.nowUs - pow2us(newLage) * 1_000_000;
     this.pendingEvents.push({
-      timeUs: this.nowUs, event: "topic_adjust", src: nodeId, dst: null,
-      topicHash: hash, details: { name: topic.name, lage: newLage },
+      timeUs: this.nowUs,
+      event: "topic_adjust",
+      src: nodeId,
+      dst: null,
+      topicHash: hash,
+      details: { name: topic.name, lage: newLage },
     });
   }
 
@@ -676,11 +764,16 @@ export class Simulation {
     if (!node) return;
     const topic = node.topics.get(hash);
     node.topics.delete(hash);
-    this.delist(node.gossipQueue, hash);
-    this.delist(node.gossipUrgent, hash);
+    node.topicScheduleByHash.delete(hash);
+    node.pendingUrgentByHash.delete(hash);
+    this.ensurePollScheduled(node);
     this.pendingEvents.push({
-      timeUs: this.nowUs, event: "topic_expunged", src: nodeId, dst: null,
-      topicHash: hash, details: { name: topic?.name ?? "?" },
+      timeUs: this.nowUs,
+      event: "topic_expunged",
+      src: nodeId,
+      dst: null,
+      topicHash: hash,
+      details: { name: topic?.name ?? "?" },
     });
   }
 
@@ -725,10 +818,12 @@ export class Simulation {
 
   checkConvergence(): boolean {
     return this.checkConvergenceImpl(
-      this.onlineNodes().map(n => ({
+      this.onlineNodes().map((n) => ({
         partition: n.partitionSet,
-        topics: [...n.topics.values()].map(t => ({
-          hash: t.hash, subjectId: topicSubjectId(t), evictions: t.evictions,
+        topics: [...n.topics.values()].map((t) => ({
+          hash: t.hash,
+          subjectId: topicSubjectId(t, this.net.protocol.subjectIdModulus),
+          evictions: t.evictions,
         })),
       })),
     );
@@ -740,7 +835,7 @@ export class Simulation {
       if (!s.online) continue;
       nodes.push({
         partition: s.partitionSet,
-        topics: s.topics.map(t => ({ hash: t.hash, subjectId: t.subjectId, evictions: t.evictions })),
+        topics: s.topics.map((t) => ({ hash: t.hash, subjectId: t.subjectId, evictions: t.evictions })),
       });
     }
     return this.checkConvergenceImpl(nodes);
@@ -781,13 +876,34 @@ export class Simulation {
     this.queue.push({ timeUs, seq: this.seq++, type, payload });
   }
 
-  private ditherInt(mean: number, deviation: number): number {
-    return mean + this.rng.randomInt(-deviation, deviation);
+  private durationRangeToUs(range: [number, number]): number {
+    const lo = Math.min(range[0], range[1]);
+    const hi = Math.max(range[0], range[1]);
+    const sampleSec = lo === hi ? lo : lo + this.rng.random() * (hi - lo);
+    return Math.max(0, Math.round(sampleSec * 1_000_000));
+  }
+
+  private durationBetweenSecToUs(low: number, high: number): number {
+    const lo = Math.min(low, high);
+    const hi = Math.max(low, high);
+    const sampleSec = lo === hi ? lo : lo + this.rng.random() * (hi - lo);
+    return Math.max(0, Math.round(sampleSec * 1_000_000));
+  }
+
+  private periodicIntervalBoundsSec(): [number, number] {
+    const period = this.net.protocol.gossipPeriod;
+    const dither = this.net.protocol.gossipDither;
+    return [Math.max(0, period - dither), period + dither];
+  }
+
+  private heardIntervalBoundsSec(): [number, number] {
+    const period = this.net.protocol.gossipPeriod;
+    const dither = this.net.protocol.gossipDither;
+    return [period + dither, period * 3];
   }
 
   private randDelay(): number {
-    const [lo, hi] = this.net.delayUs;
-    return this.rng.randint(lo, hi);
+    return this.durationRangeToUs(this.net.delay);
   }
 
   private distanceDelay(srcId: number, dstId: number): number {
@@ -810,76 +926,164 @@ export class Simulation {
     return result;
   }
 
-  private delist(list: bigint[], hash: bigint): void {
-    const idx = list.indexOf(hash);
-    if (idx >= 0) {
-      list.splice(idx, 1);
-    }
+  private shardForTopic(hash: bigint): number {
+    const shardCount = BigInt(this.net.protocol.shardCount);
+    const offset = Number(asU64(hash) % shardCount);
+    return this.net.protocol.subjectIdModulus + offset;
   }
 
-  private enlistHead(list: bigint[], hash: bigint): void {
-    this.delist(list, hash);
-    list.unshift(hash);
-  }
-
-  private enlistTail(list: bigint[], hash: bigint): void {
-    this.delist(list, hash);
-    list.push(hash);
-  }
-
-  private listTail(list: bigint[]): bigint | null {
-    return list.length > 0 ? list[list.length - 1] : null;
-  }
-
-  private scheduleGossip(node: Node, hash: bigint): void {
-    const topic = node.topics.get(hash);
-    const eligible = topic !== undefined && !isPinned(topic.hash);
-    if (eligible) {
-      this.enlistHead(node.gossipQueue, hash);
-    } else {
-      this.delist(node.gossipQueue, hash);
-    }
-  }
-
-  private scheduleGossipUrgent(node: Node, hash: bigint): void {
-    const topic = node.topics.get(hash);
-    if (!topic || isPinned(topic.hash)) {
-      return;
-    }
-    if (node.gossipUrgent.includes(hash)) {
-      return;
-    }
-    this.enlistTail(node.gossipQueue, hash);
-    this.enlistHead(node.gossipUrgent, hash);
-    this.ensurePollScheduled(node);
-  }
-
-  private hasEligiblePeer(node: Node): boolean {
-    const threshold = this.nowUs - GOSSIP_PEER_ELIGIBLE;
-    for (const p of node.peers) {
-      if (!p) continue;
-      if (p.lastSeenUs < threshold) continue;
-      return true;
+  private nodeListensToShard(node: Node, shardIndex: number): boolean {
+    for (const topic of node.topics.values()) {
+      if (this.shardForTopic(topic.hash) === shardIndex) {
+        return true;
+      }
     }
     return false;
   }
 
-  private maybeActivatePeriodicUnicast(node: Node): void {
-    if (!this.net.periodicUnicastEnabled) {
-      node.gossipPeriodicNextUs = HEAT_DEATH;
+  private nextPeriodicTopic(node: Node): { hash: bigint; nextUs: number } | null {
+    let bestHash: bigint | null = null;
+    let bestNext = HEAT_DEATH;
+    const stale: bigint[] = [];
+
+    for (const [hash, state] of node.topicScheduleByHash) {
+      if (!node.topics.has(hash)) {
+        stale.push(hash);
+        continue;
+      }
+      if (
+        state.nextGossipUs < bestNext ||
+        (state.nextGossipUs === bestNext && (bestHash === null || hash < bestHash))
+      ) {
+        bestHash = hash;
+        bestNext = state.nextGossipUs;
+      }
+    }
+
+    for (const hash of stale) {
+      node.topicScheduleByHash.delete(hash);
+      node.pendingUrgentByHash.delete(hash);
+    }
+
+    if (bestHash === null) {
+      return null;
+    }
+    return { hash: bestHash, nextUs: bestNext };
+  }
+
+  private earliestUrgentDeadline(node: Node): number {
+    let out = HEAT_DEATH;
+    const stale: bigint[] = [];
+
+    for (const [hash, pending] of node.pendingUrgentByHash) {
+      if (!node.topics.has(hash)) {
+        stale.push(hash);
+        continue;
+      }
+      if (pending.deadlineUs < out) {
+        out = pending.deadlineUs;
+      }
+    }
+
+    for (const hash of stale) {
+      node.pendingUrgentByHash.delete(hash);
+    }
+
+    return out;
+  }
+
+  private ensureTopicScheduleEntry(node: Node, hash: bigint): void {
+    if (node.topicScheduleByHash.has(hash)) {
       return;
     }
-    if (node.gossipPeriodicNextUs < HEAT_DEATH) {
+    const jitter = this.durationBetweenSecToUs(0, this.net.protocol.gossipStartupDelay);
+    node.topicScheduleByHash.set(hash, {
+      nextGossipUs: this.nowUs + Math.max(0, jitter),
+      periodicEmissions: 0,
+      firstPeriodicBroadcastPending: true,
+    });
+  }
+
+  private scheduleAfterSend(node: Node, hash: bigint): void {
+    const state = node.topicScheduleByHash.get(hash);
+    if (!state) return;
+    const [low, high] = this.periodicIntervalBoundsSec();
+    state.nextGossipUs = this.nowUs + this.durationBetweenSecToUs(low, high);
+  }
+
+  private scheduleAfterHeard(node: Node, hash: bigint): void {
+    const state = node.topicScheduleByHash.get(hash);
+    if (!state) return;
+    const [low, high] = this.heardIntervalBoundsSec();
+    state.nextGossipUs = this.nowUs + this.durationBetweenSecToUs(low, high);
+  }
+
+  private scheduleUrgent(node: Node, hash: bigint, scope: "shard" | "broadcast"): void {
+    if (!node.topics.has(hash)) {
       return;
     }
-    if (!node.online) {
+    const deadlineUs = this.nowUs + this.durationBetweenSecToUs(0, this.net.protocol.gossipUrgentDelay);
+    const existing = node.pendingUrgentByHash.get(hash);
+    if (!existing) {
+      node.pendingUrgentByHash.set(hash, { deadlineUs, scope });
+      this.ensurePollScheduled(node);
       return;
     }
-    if (!this.hasEligiblePeer(node)) {
+
+    if (deadlineUs < existing.deadlineUs) {
+      existing.deadlineUs = deadlineUs;
+    }
+    if (scope === "broadcast") {
+      existing.scope = "broadcast";
+    }
+    this.ensurePollScheduled(node);
+  }
+
+  private cancelPendingUrgentIfUpToDate(
+    node: Node,
+    hash: bigint,
+    receivedEvictions: number,
+    receivedLage: number,
+  ): void {
+    const topic = node.topics.get(hash);
+    if (!topic) return;
+    const localEvictions = topic.evictions;
+    const localLage = topicLage(topic.tsCreatedUs, this.nowUs);
+    if (leftWinsDivergence(localLage, localEvictions, receivedLage, receivedEvictions)) {
       return;
     }
-    const deviation = Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
-    node.gossipPeriodicNextUs = this.nowUs + this.ditherInt(GOSSIP_PERIODIC_UNICAST_PERIOD, deviation);
+    const pending = node.pendingUrgentByHash.get(hash);
+    if (!pending) return;
+    if (pending.deadlineUs > this.nowUs) {
+      node.pendingUrgentByHash.delete(hash);
+    }
+  }
+
+  private shouldBroadcastByFraction(periodicEmissions: number): boolean {
+    const fraction = this.net.protocol.gossipBroadcastFraction;
+    if (fraction <= 0) {
+      return false;
+    }
+    if (fraction >= 1) {
+      return true;
+    }
+    const current = Math.floor(periodicEmissions * fraction);
+    const previous = Math.floor((periodicEmissions - 1) * fraction);
+    return current > previous;
+  }
+
+  private choosePeriodicScope(node: Node, hash: bigint): "broadcast" | "shard" {
+    const state = node.topicScheduleByHash.get(hash);
+    if (!state) {
+      return "broadcast";
+    }
+    state.periodicEmissions += 1;
+    const first = state.firstPeriodicBroadcastPending;
+    state.firstPeriodicBroadcastPending = false;
+    if (first) {
+      return "broadcast";
+    }
+    return this.shouldBroadcastByFraction(state.periodicEmissions) ? "broadcast" : "shard";
   }
 
   private desiredPollTime(node: Node): number {
@@ -889,22 +1093,19 @@ export class Simulation {
 
     let when = HEAT_DEATH;
 
-    if (this.listTail(node.gossipUrgent) !== null) {
-      // Urgent repair gossips go out immediately, even before the first broadcast slot.
+    const urgent = this.earliestUrgentDeadline(node);
+    if (urgent <= this.nowUs) {
       when = this.nowUs;
+    } else if (urgent < HEAT_DEATH) {
+      when = Math.min(when, urgent);
     }
 
-    if (node.gossipNextUs <= this.nowUs) {
-      when = this.nowUs;
-    } else if (node.gossipNextUs < HEAT_DEATH) {
-      when = Math.min(when, node.gossipNextUs);
-    }
-
-    if (this.net.periodicUnicastEnabled) {
-      if (node.gossipPeriodicNextUs <= this.nowUs) {
+    const periodic = this.nextPeriodicTopic(node);
+    if (periodic !== null) {
+      if (periodic.nextUs <= this.nowUs) {
         when = this.nowUs;
-      } else if (node.gossipPeriodicNextUs < HEAT_DEATH) {
-        when = Math.min(when, node.gossipPeriodicNextUs);
+      } else {
+        when = Math.min(when, periodic.nextUs);
       }
     }
 
@@ -912,20 +1113,11 @@ export class Simulation {
   }
 
   private ensurePollScheduled(node: Node): void {
-    this.maybeActivatePeriodicUnicast(node);
     const when = this.desiredPollTime(node);
     if (when >= HEAT_DEATH) return;
     if (node.gossipPollScheduledUs === HEAT_DEATH || when < node.gossipPollScheduledUs) {
       node.gossipPollScheduledUs = when;
       this.pushEvent(when, "GOSSIP_POLL", { node_id: node.nodeId, scheduled_us: when });
-    }
-  }
-
-  private gossipBegin(node: Node): void {
-    if (node.gossipNextUs === HEAT_DEATH) {
-      const deviation = Math.floor(node.gossipPeriodUs / 8);
-      node.gossipNextUs = this.nowUs + this.rng.randomInt(0, deviation + 1);
-      this.ensurePollScheduled(node);
     }
   }
 
@@ -936,13 +1128,18 @@ export class Simulation {
     lage: number,
     name: string,
     pushLog: (r: EventRecord) => void,
-  ): boolean {
+  ): void {
+    const recipients: number[] = [];
+    const recipientDelays: Record<string, number> = {};
+
     for (const dest of this.nodes.values()) {
       if (dest.nodeId === sender.nodeId) continue;
       if (!dest.online) continue;
       if (dest.partitionSet !== sender.partitionSet) continue;
-      if (this.rng.random() < this.net.lossProbability) continue;
       const delay = this.distanceDelay(sender.nodeId, dest.nodeId);
+      recipients.push(dest.nodeId);
+      recipientDelays[String(dest.nodeId)] = delay;
+      if (this.rng.random() < this.net.lossProbability) continue;
       this.pushEvent(this.nowUs + delay, "MSG_ARRIVE", {
         src: sender.nodeId,
         dst: dest.nodeId,
@@ -950,11 +1147,11 @@ export class Simulation {
         evictions,
         lage,
         name,
-        ttl: 0,
         msg_type: "broadcast",
         send_time_us: this.nowUs,
       });
     }
+
     pushLog({
       timeUs: this.nowUs,
       event: "broadcast",
@@ -965,176 +1162,124 @@ export class Simulation {
         evictions,
         lage,
         name,
-        subjectId: subjectId(hash, evictions, SUBJECT_ID_MODULUS),
+        subjectId: subjectId(hash, evictions, this.net.protocol.subjectIdModulus),
+        recipients,
+        recipientDelays,
       },
     });
-    // Transport send is modeled as always successful on the sender side.
-    return true;
   }
 
-  private sendUnicast(
+  private sendShard(
     sender: Node,
-    destId: number,
     hash: bigint,
     evictions: number,
     lage: number,
     name: string,
-    ttl: number,
-    msgType: string,
+    shardIndex: number,
     pushLog: (r: EventRecord) => void,
-  ): boolean {
-    const dest = this.nodes.get(destId);
-    if (!dest || !dest.online) return false;
-    if (dest.partitionSet !== sender.partitionSet) return false;
-    if (this.rng.random() < this.net.lossProbability) return false;
+  ): void {
+    const listeners: number[] = [];
+    const listenerDelays: Record<string, number> = {};
 
-    const delay = this.distanceDelay(sender.nodeId, destId);
-    this.pushEvent(this.nowUs + delay, "MSG_ARRIVE", {
-      src: sender.nodeId,
-      dst: destId,
-      topic_hash: hash,
-      evictions,
-      lage,
-      name,
-      ttl,
-      msg_type: msgType,
-      send_time_us: this.nowUs,
-    });
+    for (const dest of this.nodes.values()) {
+      if (dest.nodeId === sender.nodeId) continue;
+      if (!dest.online) continue;
+      if (dest.partitionSet !== sender.partitionSet) continue;
+      if (!this.nodeListensToShard(dest, shardIndex)) continue;
+      const delay = this.distanceDelay(sender.nodeId, dest.nodeId);
+      listeners.push(dest.nodeId);
+      listenerDelays[String(dest.nodeId)] = delay;
+      if (this.rng.random() < this.net.lossProbability) continue;
+      this.pushEvent(this.nowUs + delay, "MSG_ARRIVE", {
+        src: sender.nodeId,
+        dst: dest.nodeId,
+        topic_hash: hash,
+        evictions,
+        lage,
+        name,
+        msg_type: "shard",
+        shard_index: shardIndex,
+        send_time_us: this.nowUs,
+      });
+    }
+
     pushLog({
       timeUs: this.nowUs,
-      event: msgType,
+      event: "shard",
       src: sender.nodeId,
-      dst: destId,
+      dst: null,
       topicHash: hash,
       details: {
         evictions,
         lage,
-        ttl,
-        delayUs: delay,
         name,
-        subjectId: subjectId(hash, evictions, SUBJECT_ID_MODULUS),
+        subjectId: subjectId(hash, evictions, this.net.protocol.subjectIdModulus),
+        shardIndex,
+        listeners,
+        listenerDelays,
       },
     });
+  }
+
+  private transmitTopicGossip(
+    node: Node,
+    hash: bigint,
+    scope: "broadcast" | "shard",
+    pushLog: (r: EventRecord) => void,
+  ): boolean {
+    const topic = node.topics.get(hash);
+    if (!topic) {
+      return false;
+    }
+
+    const lage = topicLage(topic.tsCreatedUs, this.nowUs);
+    if (scope === "broadcast") {
+      this.sendBroadcast(node, topic.hash, topic.evictions, lage, topic.name, pushLog);
+    } else {
+      this.sendShard(node, topic.hash, topic.evictions, lage, topic.name, this.shardForTopic(topic.hash), pushLog);
+    }
+
+    this.scheduleAfterSend(node, hash);
     return true;
   }
 
-  private randomPeerExcept(node: Node, blacklist: Set<number>): GossipPeer | null {
-    const threshold = this.nowUs - GOSSIP_PEER_ELIGIBLE;
-    const eligible: GossipPeer[] = [];
-    for (const p of node.peers) {
-      if (!p) continue;
-      if (p.lastSeenUs < threshold) continue;
-      if (blacklist.has(p.nodeId)) continue;
-      eligible.push(p);
-    }
-    if (eligible.length === 0) return null;
-    return this.rng.choice(eligible);
-  }
+  private emitDueUrgent(node: Node, pushLog: (r: EventRecord) => void): void {
+    const due: { hash: bigint; deadlineUs: number; scope: "shard" | "broadcast" }[] = [];
 
-  private randomPeriodicTopic(node: Node): Topic | null {
-    const eligible: Topic[] = [];
-    for (const topic of node.topics.values()) {
-      if (!isPinned(topic.hash)) {
-        eligible.push(topic);
+    for (const [hash, pending] of node.pendingUrgentByHash) {
+      if (!node.topics.has(hash)) {
+        continue;
       }
-    }
-    if (eligible.length === 0) {
-      return null;
-    }
-    return this.rng.choice(eligible);
-  }
-
-  private dedupMatchOrLru(node: Node, dhash: bigint): DedupEntry {
-    let oldest = node.dedup[0];
-    for (const entry of node.dedup) {
-      if (entry.hash === dhash) {
-        return entry;
-      }
-      if (oldest.lastSeenUs > entry.lastSeenUs) {
-        oldest = entry;
-      }
-    }
-    return oldest;
-  }
-
-  private dedupIsFresh(entry: DedupEntry, dhash: bigint): boolean {
-    return (entry.hash !== dhash) || (entry.lastSeenUs < (this.nowUs - GOSSIP_DEDUP_TIMEOUT));
-  }
-
-  private dedupUpdate(entry: DedupEntry, dhash: bigint): void {
-    entry.hash = dhash;
-    entry.lastSeenUs = this.nowUs;
-  }
-
-  private gossipEpidemicForward(
-    node: Node,
-    senderId: number,
-    originalTtl: number,
-    hash: bigint,
-    evictions: number,
-    lage: number,
-    name: string,
-    pushLog: (r: EventRecord) => void,
-  ): void {
-    if (originalTtl <= 0) return;
-    this.gossipBegin(node);
-    const ttl = originalTtl - 1;
-    const blacklist = new Set<number>([senderId]);
-    for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
-      const peer = this.randomPeerExcept(node, blacklist);
-      if (!peer) break;
-      blacklist.add(peer.nodeId);
-      this.sendUnicast(node, peer.nodeId, hash, evictions, lage, name, ttl, "forward", pushLog);
-    }
-  }
-
-  private gossipPeerUpdate(node: Node, senderId: number, pushLog: (r: EventRecord) => void): void {
-    const postUpdate = (): void => {
-      this.maybeActivatePeriodicUnicast(node);
-      this.ensurePollScheduled(node);
-    };
-
-    for (const p of node.peers) {
-      if (p && p.nodeId === senderId) {
-        p.lastSeenUs = this.nowUs;
-        postUpdate();
-        return;
+      if (pending.deadlineUs <= this.nowUs) {
+        due.push({ hash, deadlineUs: pending.deadlineUs, scope: pending.scope });
       }
     }
 
-    const threshold = this.nowUs - GOSSIP_PEER_STALE;
-    let oldestIdx = 0;
-    let oldestSeen = node.peers[0]?.lastSeenUs ?? BIG_BANG;
-    for (let i = 1; i < node.peers.length; i++) {
-      const seen = node.peers[i]?.lastSeenUs ?? BIG_BANG;
-      if (seen < oldestSeen) {
-        oldestSeen = seen;
-        oldestIdx = i;
-      }
+    due.sort((a, b) => {
+      if (a.deadlineUs !== b.deadlineUs) return a.deadlineUs - b.deadlineUs;
+      return a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0;
+    });
+
+    let sentAny = false;
+    for (const item of due) {
+      node.pendingUrgentByHash.delete(item.hash);
+      const sent = this.transmitTopicGossip(node, item.hash, item.scope, pushLog);
+      sentAny = sentAny || sent;
     }
 
-    if (oldestSeen < threshold) {
-      const oldNodeId = node.peers[oldestIdx]?.nodeId ?? null;
-      node.peers[oldestIdx] = { nodeId: senderId, lastSeenUs: this.nowUs };
-      pushLog({ timeUs: this.nowUs, event: "peer_refresh", src: node.nodeId, dst: null,
-        topicHash: 0n, details: { oldPeer: oldNodeId, newPeer: senderId, peerIdx: oldestIdx, reason: "stale" } });
-      postUpdate();
+    if (sentAny) {
+      node.lastUrgentUs = this.nowUs;
+    }
+  }
+
+  private emitPeriodicGossip(node: Node, pushLog: (r: EventRecord) => void): void {
+    const next = this.nextPeriodicTopic(node);
+    if (!next || next.nextUs > this.nowUs) {
       return;
     }
 
-    if (
-      this.nowUs >= node.peerReplacementMoratoriumUntil &&
-      this.rng.chance(GOSSIP_PEER_REPLACEMENT_PROBABILITY_RECIPROCAL)
-    ) {
-      const idx = this.rng.randrange(GOSSIP_PEER_COUNT);
-      const oldNodeId = node.peers[idx]?.nodeId ?? null;
-      node.peers[idx] = { nodeId: senderId, lastSeenUs: this.nowUs };
-      pushLog({ timeUs: this.nowUs, event: "peer_refresh", src: node.nodeId, dst: null,
-        topicHash: 0n, details: { oldPeer: oldNodeId, newPeer: senderId, peerIdx: idx, reason: "random" } });
-      const moratorium = GOSSIP_PERIOD >> 1;
-      node.peerReplacementMoratoriumUntil = this.nowUs + this.ditherInt(moratorium, moratorium);
-    }
-    postUpdate();
+    const scope = this.choosePeriodicScope(node, next.hash);
+    this.transmitTopicGossip(node, next.hash, scope, pushLog);
   }
 
   private handleGossipPollEvent(payload: Record<string, unknown>, pushLog: (r: EventRecord) => void): void {
@@ -1148,87 +1293,8 @@ export class Simulation {
   }
 
   private gossipPoll(node: Node, pushLog: (r: EventRecord) => void): void {
-    this.maybeActivatePeriodicUnicast(node);
-
-    if (this.nowUs >= node.gossipNextUs) {
-      const hash = this.listTail(node.gossipQueue);
-      if (hash !== null) {
-        const topic = node.topics.get(hash);
-        if (topic) {
-          this.scheduleGossip(node, hash);
-          const lage = topicLage(topic.tsCreatedUs, this.nowUs);
-          const sent = this.sendBroadcast(node, topic.hash, topic.evictions, lage, topic.name, pushLog);
-          if (sent) {
-            const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
-            this.dedupUpdate(this.dedupMatchOrLru(node, dhash), dhash);
-          }
-        } else {
-          this.delist(node.gossipQueue, hash);
-        }
-      }
-      const deviation = Math.floor(node.gossipPeriodUs / 8);
-      node.gossipNextUs = this.nowUs + this.ditherInt(node.gossipPeriodUs, deviation);
-    }
-
-    if (this.net.periodicUnicastEnabled && this.nowUs >= node.gossipPeriodicNextUs) {
-      const topic = this.randomPeriodicTopic(node);
-      const peer = this.randomPeerExcept(node, new Set<number>());
-      if (topic && peer) {
-        const lage = topicLage(topic.tsCreatedUs, this.nowUs);
-        const sent = this.sendUnicast(
-          node,
-          peer.nodeId,
-          topic.hash,
-          topic.evictions,
-          lage,
-          topic.name,
-          GOSSIP_PERIODIC_UNICAST_TTL,
-          "periodic_unicast",
-          pushLog,
-        );
-        if (sent) {
-          const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
-          this.dedupUpdate(this.dedupMatchOrLru(node, dhash), dhash);
-        }
-      }
-      const deviation = Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
-      node.gossipPeriodicNextUs = this.nowUs + this.ditherInt(GOSSIP_PERIODIC_UNICAST_PERIOD, deviation);
-    }
-
-    const urgentHash = this.listTail(node.gossipUrgent);
-    if (urgentHash !== null) {
-      this.gossipBegin(node);
-      this.delist(node.gossipUrgent, urgentHash);
-      const topic = node.topics.get(urgentHash);
-      if (topic) {
-        const lage = topicLage(topic.tsCreatedUs, this.nowUs);
-        const blacklist = new Set<number>();
-        let succeeded = false;
-        for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
-          const peer = this.randomPeerExcept(node, blacklist);
-          if (!peer) break;
-          blacklist.add(peer.nodeId);
-          const ok = this.sendUnicast(
-            node,
-            peer.nodeId,
-            topic.hash,
-            topic.evictions,
-            lage,
-            topic.name,
-            GOSSIP_TTL,
-            "unicast",
-            pushLog,
-          );
-          succeeded = succeeded || ok;
-        }
-        if (succeeded) {
-          const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
-          this.dedupUpdate(this.dedupMatchOrLru(node, dhash), dhash);
-          node.lastUrgentUs = this.nowUs;
-        }
-      }
-    }
-
+    this.emitDueUrgent(node, pushLog);
+    this.emitPeriodicGossip(node, pushLog);
     this.ensurePollScheduled(node);
   }
 
@@ -1243,7 +1309,7 @@ export class Simulation {
     let out = CrdtMergeOutcome.Consensus;
 
     if (mine.evictions !== remoteEvictions) {
-      const won = (mineLage > remoteLage) || ((mineLage === remoteLage) && (mine.evictions > remoteEvictions));
+      const won = leftWinsDivergence(mineLage, mine.evictions, remoteLage, remoteEvictions);
       pushLog({
         timeUs: this.nowUs,
         event: "conflict",
@@ -1262,8 +1328,7 @@ export class Simulation {
       });
 
       if (won) {
-        this.gossipBegin(node);
-        this.scheduleGossipUrgent(node, mine.hash);
+        this.scheduleUrgent(node, mine.hash, "shard");
         out = CrdtMergeOutcome.LocalWin;
       } else {
         topicMergeLage(mine, this.nowUs, remoteLage);
@@ -1274,12 +1339,14 @@ export class Simulation {
           src: node.nodeId,
           dst: null,
           topicHash: mine.hash,
-          details: { name: mine.name, accepted_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
+          details: {
+            name: mine.name,
+            accepted_evictions: mine.evictions,
+            new_sid: topicSubjectId(mine, this.net.protocol.subjectIdModulus),
+          },
         });
         out = CrdtMergeOutcome.LocalLoss;
       }
-    } else {
-      this.scheduleGossip(node, mine.hash);
     }
 
     topicMergeLage(mine, this.nowUs, remoteLage);
@@ -1294,7 +1361,7 @@ export class Simulation {
     remoteName: string,
     pushLog: (r: EventRecord) => void,
   ): CrdtMergeOutcome {
-    const sid = subjectId(remoteHash, remoteEvictions, SUBJECT_ID_MODULUS);
+    const sid = subjectId(remoteHash, remoteEvictions, this.net.protocol.subjectIdModulus);
     const mine = this.findBySubjectId(node, sid, null);
     if (!mine) return CrdtMergeOutcome.Consensus;
 
@@ -1311,28 +1378,32 @@ export class Simulation {
         name: mine.name,
         remote_name: remoteName,
         local_won: won,
-        local_sid: topicSubjectId(mine),
+        local_sid: topicSubjectId(mine, this.net.protocol.subjectIdModulus),
         remote_hash: remoteHash,
         remote_evictions: remoteEvictions,
       },
     });
 
     if (won) {
-      this.gossipBegin(node);
-      this.scheduleGossipUrgent(node, mine.hash);
+      this.scheduleUrgent(node, mine.hash, "broadcast");
       return CrdtMergeOutcome.LocalWin;
-    } else {
-      this.topicAllocate(node, mine, mine.evictions + 1, this.nowUs);
-      pushLog({
-        timeUs: this.nowUs,
-        event: "resolved",
-        src: node.nodeId,
-        dst: null,
-        topicHash: mine.hash,
-        details: { name: mine.name, new_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
-      });
-      return CrdtMergeOutcome.LocalLoss;
     }
+
+    const bumped = mine.evictions + 1;
+    this.topicAllocate(node, mine, bumped, this.nowUs);
+    pushLog({
+      timeUs: this.nowUs,
+      event: "resolved",
+      src: node.nodeId,
+      dst: null,
+      topicHash: mine.hash,
+      details: {
+        name: mine.name,
+        new_evictions: mine.evictions,
+        new_sid: topicSubjectId(mine, this.net.protocol.subjectIdModulus),
+      },
+    });
+    return CrdtMergeOutcome.LocalLoss;
   }
 
   private handleMsgArrive(payload: Record<string, unknown>, pushLog: (r: EventRecord) => void): void {
@@ -1345,20 +1416,8 @@ export class Simulation {
     const evictions = payload["evictions"] as number;
     const lage = payload["lage"] as number;
     const name = payload["name"] as string;
-    const ttl = payload["ttl"] as number;
     const msgType = payload["msg_type"] as string;
-
-    if ((lage < LAGE_MIN) || (lage > LAGE_MAX)) return;
-    if (isPinned(hash) && evictions !== 0) return;
-
-    this.gossipPeerUpdate(node, srcId, pushLog);
-
-    const dedupHash = gossipDedupHash(hash, evictions, lage);
-    const dedup = this.dedupMatchOrLru(node, dedupHash);
-    const dedupFresh = this.dedupIsFresh(dedup, dedupHash);
-    const ttlPositive = ttl > 0;
-    const shouldForward = dedupFresh && ttlPositive;
-    this.dedupUpdate(dedup, dedupHash);
+    const shardIndex = payload["shard_index"] as number | undefined;
 
     pushLog({
       timeUs: this.nowUs,
@@ -1371,88 +1430,77 @@ export class Simulation {
         sendTimeUs: payload["send_time_us"],
         name,
         msgType,
+        shardIndex,
       },
     });
 
-    const maybeLogGossipXterminated = (forwardAllowedByOutcome: boolean): void => {
-      const epidemicUnicast = msgType === "unicast" || msgType === "forward" || msgType === "periodic_unicast";
-      if (!epidemicUnicast || !forwardAllowedByOutcome || shouldForward) {
-        return;
-      }
-      const ttlDropped = !ttlPositive;
-      const dedupDropped = !dedupFresh;
-      const dropReason = ttlDropped && dedupDropped ? "ttl+dedup" : (ttlDropped ? "ttl" : "dedup");
-      pushLog({
-        timeUs: this.nowUs,
-        event: "gossip_xterminated",
-        src: node.nodeId,
-        dst: null,
-        topicHash: hash,
-        details: {
-          name,
-          msgType,
-          ttl,
-          drop_reason: dropReason,
-        },
-      });
-    };
-
     const mine = node.topics.get(hash);
     if (mine) {
-      const outcome = this.onGossipKnownTopic(node, mine, evictions, lage, pushLog);
-      const allowForward = outcome === CrdtMergeOutcome.Consensus;
-      if (shouldForward && allowForward) {
-        this.gossipEpidemicForward(
-          node,
-          srcId,
-          ttl,
-          hash,
-          mine.evictions,
-          topicLage(mine.tsCreatedUs, this.nowUs),
-          name,
-          pushLog,
-        );
-      }
-      maybeLogGossipXterminated(allowForward);
+      this.onGossipKnownTopic(node, mine, evictions, lage, pushLog);
+      this.scheduleAfterHeard(node, hash);
+      this.cancelPendingUrgentIfUpToDate(node, hash, evictions, lage);
     } else {
-      const outcome = this.onGossipUnknownTopic(node, hash, evictions, lage, name, pushLog);
-      const allowForward = (outcome === CrdtMergeOutcome.Consensus) || (outcome === CrdtMergeOutcome.LocalLoss);
-      if (shouldForward && allowForward) {
-        this.gossipEpidemicForward(node, srcId, ttl, hash, evictions, lage, name, pushLog);
-      }
-      maybeLogGossipXterminated(allowForward);
+      this.onGossipUnknownTopic(node, hash, evictions, lage, name, pushLog);
     }
+
+    this.ensurePollScheduled(node);
   }
 
-  private topicAllocate(node: Node, topic: Topic, newEvictions: number, nowUs: number): void {
-    if (isPinned(topic.hash)) {
-      topic.evictions = 0;
-      return;
-    }
-
-    let ev = Math.max(0, Math.floor(newEvictions));
-    for (let iter = 0; iter < 20000; iter++) {
-      const sid = subjectId(topic.hash, ev, SUBJECT_ID_MODULUS);
-      const that = this.findBySubjectId(node, sid, topic);
-      const victory = !that || leftWins(topicLage(topic.tsCreatedUs, nowUs), topic.hash, topicLage(that.tsCreatedUs, nowUs), that.hash);
-
-      if (victory) {
-        topic.evictions = ev;
-        this.scheduleGossipUrgent(node, topic.hash);
-        if (that) {
-          this.topicAllocate(node, that, that.evictions + 1, nowUs);
-        }
-        return;
+  private topicAllocate(node: Node, topic: Topic, newEvictions: number, nowUs: number): number {
+    const originalEvictionsByHash = new Map<bigint, number>();
+    const markOriginalEvictions = (t: Topic): void => {
+      if (!originalEvictionsByHash.has(t.hash)) {
+        originalEvictionsByHash.set(t.hash, t.evictions);
       }
-      ev += 1;
+    };
+
+    let moving = topic;
+    let targetEvictions = Math.max(0, Math.floor(newEvictions));
+
+    for (let iter = 0; iter < SPIN_BLOCK_MAX; iter++) {
+      if (moving.evictions !== targetEvictions) {
+        markOriginalEvictions(moving);
+      }
+      moving.evictions = targetEvictions;
+
+      const sid = topicSubjectId(moving, this.net.protocol.subjectIdModulus);
+      const collided = this.findBySubjectId(node, sid, moving);
+      if (!collided) {
+        break;
+      }
+
+      const movingWins = leftWins(
+        topicLage(moving.tsCreatedUs, nowUs),
+        moving.hash,
+        topicLage(collided.tsCreatedUs, nowUs),
+        collided.hash,
+      );
+
+      if (movingWins) {
+        markOriginalEvictions(collided);
+        moving = collided;
+        targetEvictions = collided.evictions + 1;
+      } else {
+        markOriginalEvictions(moving);
+        targetEvictions = moving.evictions + 1;
+      }
     }
+
+    for (const [hash, originalEvictions] of originalEvictionsByHash) {
+      const updated = node.topics.get(hash);
+      if (!updated) continue;
+      if (updated.evictions !== originalEvictions) {
+        this.scheduleUrgent(node, hash, "broadcast");
+      }
+    }
+
+    return topic.evictions;
   }
 
   private findBySubjectId(node: Node, sid: number, exclude: Topic | null): Topic | null {
     for (const t of node.topics.values()) {
       if (exclude && t === exclude) continue;
-      if (isPinned(t.hash)) continue;
-      if (topicSubjectId(t) === sid) return t;
+      if (topicSubjectId(t, this.net.protocol.subjectIdModulus) === sid) return t;
     }
     return null;
   }
@@ -1461,13 +1509,7 @@ export class Simulation {
     const node = this.nodes.get(nodeId);
     if (!node) return;
     node.online = true;
-    node.peerReplacementMoratoriumUntil = BIG_BANG;
-    this.maybeActivatePeriodicUnicast(node);
-    // If gossip was already commenced while offline (e.g., topic created before join),
-    // schedule polling now that the node is online.
-    if (node.gossipNextUs < HEAT_DEATH || node.gossipPeriodicNextUs < HEAT_DEATH) {
-      this.ensurePollScheduled(node);
-    }
+    this.ensurePollScheduled(node);
     pushLog({
       timeUs: this.nowUs,
       event: "join",
@@ -1486,25 +1528,29 @@ export class Simulation {
         name: t.name,
         hash: t.hash,
         evictions: t.evictions,
-        subjectId: topicSubjectId(t),
+        subjectId: topicSubjectId(t, this.net.protocol.subjectIdModulus),
         lage: topicLage(t.tsCreatedUs, this.nowUs),
         tsCreatedUs: t.tsCreatedUs,
         sortOrder: t.sortOrder,
       });
     }
 
-    const peers: (PeerSnap | null)[] = node.peers.map(
-      p => (p ? { nodeId: p.nodeId, lastSeenUs: p.lastSeenUs } : null),
-    );
+    const shardSet = new Set<number>();
+    for (const t of node.topics.values()) {
+      shardSet.add(this.shardForTopic(t.hash));
+    }
+    const shardIds = [...shardSet].sort((a, b) => a - b);
+
+    const nextPeriodic = this.nextPeriodicTopic(node);
 
     return {
       nodeId: node.nodeId,
       online: node.online,
       topics,
-      peers,
-      gossipQueueFront: this.listTail(node.gossipQueue),
-      gossipUrgentFront: this.listTail(node.gossipUrgent),
-      nextBroadcastUs: node.gossipNextUs >= HEAT_DEATH ? 0 : node.gossipNextUs,
+      shardIds,
+      nextTopicHash: nextPeriodic?.hash ?? null,
+      nextGossipUs: nextPeriodic ? nextPeriodic.nextUs : 0,
+      pendingUrgentCount: node.pendingUrgentByHash.size,
       lastUrgentUs: node.lastUrgentUs,
       partitionSet: node.partitionSet,
     };
@@ -1513,7 +1559,7 @@ export class Simulation {
   private topicSidMap(node: Node): Map<bigint, number> {
     const m = new Map<bigint, number>();
     for (const [h, t] of node.topics) {
-      m.set(h, topicSubjectId(t));
+      m.set(h, topicSubjectId(t, this.net.protocol.subjectIdModulus));
     }
     return m;
   }

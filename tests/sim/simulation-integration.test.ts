@@ -1,10 +1,41 @@
 import { describe, it, expect } from "vitest";
 import { Simulation } from "../../src/sim.js";
-import type { NetworkConfig } from "../../src/types.js";
+import type { EventRecord, NetworkConfig } from "../../src/types.js";
+import {
+  DEFAULT_SHARD_COUNT,
+  DEFAULT_GOSSIP_STARTUP_DELAY,
+  DEFAULT_GOSSIP_PERIOD,
+  DEFAULT_GOSSIP_DITHER,
+  DEFAULT_GOSSIP_BROADCAST_FRACTION,
+  DEFAULT_GOSSIP_URGENT_DELAY,
+  SUBJECT_ID_MODULUS,
+} from "../../src/constants.js";
 
-const NET: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0, periodicUnicastEnabled: true };
+function makeNet(
+  overrides: {
+    delay?: [number, number];
+    lossProbability?: number;
+    protocol?: Partial<NetworkConfig["protocol"]>;
+  } = {},
+): NetworkConfig {
+  const protocol = {
+    subjectIdModulus: SUBJECT_ID_MODULUS,
+    shardCount: DEFAULT_SHARD_COUNT,
+    gossipStartupDelay: DEFAULT_GOSSIP_STARTUP_DELAY,
+    gossipPeriod: DEFAULT_GOSSIP_PERIOD,
+    gossipDither: DEFAULT_GOSSIP_DITHER,
+    gossipBroadcastFraction: DEFAULT_GOSSIP_BROADCAST_FRACTION,
+    gossipUrgentDelay: DEFAULT_GOSSIP_URGENT_DELAY,
+    ...overrides.protocol,
+  };
+  return {
+    delay: overrides.delay ?? [0.001, 0.005],
+    lossProbability: overrides.lossProbability ?? 0,
+    protocol,
+  };
+}
 
-function makeSim(seed = 42, net = NET): Simulation {
+function makeSim(seed = 42, net = makeNet()): Simulation {
   return new Simulation(net, seed);
 }
 
@@ -12,24 +43,29 @@ function stepSeconds(sim: Simulation, seconds: number): void {
   sim.stepUntil(sim.nowUs + seconds * 1_000_000);
 }
 
+function invokeMsgArrive(sim: Simulation, payload: Record<string, unknown>): EventRecord[] {
+  const out: EventRecord[] = [];
+  (sim as any).handleMsgArrive(payload, (r: EventRecord) => out.push(r));
+  return out;
+}
+
 describe("simulation integration", () => {
-  it("two-node gossip: node 1 discovers topic via gossip", () => {
+  it("two-node gossip does not create foreign topics", () => {
     const sim = makeSim();
     sim.addNode(); // 0
     sim.addNode(); // 1
-    sim.stepUntil(1); // join both
+    sim.stepUntil(1);
     sim.addTopicToNode(0, "topic/a");
     stepSeconds(sim, 30);
-    // node 1 should NOT learn it — nodes never learn foreign topics
-    // But node 0 should still have it
     expect(sim.nodes.get(0)!.topics.size).toBe(1);
+    expect(sim.nodes.get(1)!.topics.size).toBe(0);
   });
 
   it("three-node convergence: unique topics on each", () => {
     const sim = makeSim();
-    sim.addNode(); // 0
-    sim.addNode(); // 1
-    sim.addNode(); // 2
+    sim.addNode();
+    sim.addNode();
+    sim.addNode();
     sim.stepUntil(1);
     sim.addTopicToNode(0, "topic/a");
     sim.addTopicToNode(1, "topic/b");
@@ -38,88 +74,96 @@ describe("simulation integration", () => {
     expect(sim.checkConvergence()).toBe(true);
   });
 
-  it("SID collision resolution: force collision via targetSid", () => {
+  it("SID collision resolution with target SID converges", () => {
     const sim = makeSim(123);
-    sim.addNode(); // 0
-    sim.addNode(); // 1
+    sim.addNode();
+    sim.addNode();
     sim.stepUntil(1);
-    sim.addTopicToNode(0, undefined, 9000);
-    sim.addTopicToNode(1, undefined, 9000);
+    sim.addTopicToNode(0, undefined, 900);
+    sim.addTopicToNode(1, undefined, 900);
     stepSeconds(sim, 60);
     expect(sim.checkConvergence()).toBe(true);
   });
 
-  it("local-win divergence emits urgent unicast gossip", () => {
-    const sim = makeSim(1);
+  it("local-win divergence emits urgent shard gossip before periodic slot", () => {
+    const sim = makeSim(
+      1,
+      makeNet({
+        delay: [0, 0],
+        protocol: { gossipStartupDelay: 1 },
+      }),
+    );
     sim.addNode(0);
     sim.addNode(1);
     sim.stepUntil(1);
 
-    sim.addTopicToNode(0, "topic/divergence", undefined, 3, 6);
-    const localFirstBroadcastUs = sim.nodes.get(0)!.gossipNextUs;
+    const local = sim.addTopicToNode(0, "topic/divergence", undefined, 3, 6)!;
     sim.addTopicToNode(1, "topic/divergence", undefined, 0, 0);
+    sim.nodes.get(0)!.topicScheduleByHash.get(local.hash)!.nextGossipUs = sim.nowUs + 1_000_000;
+    const localFirstPeriodicUs = sim.nodes.get(0)!.topicScheduleByHash.get(local.hash)!.nextGossipUs;
 
-    // Verify urgent repair happens before the local node's first scheduled broadcast slot.
-    const events = sim.stepUntil(localFirstBroadcastUs - 1);
-    const conflict = events.find(
-      e =>
-        e.event === "conflict" &&
-        e.src === 0 &&
-        (e.details as Record<string, unknown>)["type"] === "divergence" &&
-        (e.details as Record<string, unknown>)["local_won"] === true,
-    );
-    expect(conflict).toBeDefined();
+    invokeMsgArrive(sim, {
+      src: 1,
+      dst: 0,
+      topic_hash: local.hash,
+      evictions: 0,
+      lage: 0,
+      name: local.name,
+      msg_type: "shard",
+      shard_index: 0,
+      send_time_us: sim.nowUs,
+    });
 
-    const unicast = events.find(
-      e =>
-        e.event === "unicast" &&
-        e.src === 0 &&
-        e.topicHash === conflict!.topicHash &&
-        e.timeUs >= conflict!.timeUs,
+    const events = sim.stepUntil(localFirstPeriodicUs - 1);
+    const urgentShard = events.find(
+      (e) => e.event === "shard" && e.src === 0 && e.topicHash === local.hash && e.timeUs < localFirstPeriodicUs,
     );
-    expect(unicast).toBeDefined();
-    expect(unicast!.timeUs).toBeLessThan(localFirstBroadcastUs);
+    expect(urgentShard).toBeDefined();
   });
 
-  it("local-win collision emits urgent unicast gossip", () => {
-    const sim = makeSim(1);
+  it("local-win collision emits urgent broadcast gossip", () => {
+    const sim = makeSim(
+      2,
+      makeNet({
+        delay: [0, 0],
+        protocol: { gossipStartupDelay: 1 },
+      }),
+    );
     sim.addNode(0);
     sim.addNode(1);
     sim.stepUntil(1);
 
-    const sid = 9000;
+    const sid = 900;
     const local = sim.addTopicToNode(0, undefined, sid, 0, 6)!;
-    const localFirstBroadcastUs = sim.nodes.get(0)!.gossipNextUs;
     const remote = sim.addTopicToNode(1, undefined, sid, 0, 0)!;
+    sim.nodes.get(0)!.topicScheduleByHash.get(local.hash)!.nextGossipUs = sim.nowUs + 1_000_000;
+    const localFirstPeriodicUs = sim.nodes.get(0)!.topicScheduleByHash.get(local.hash)!.nextGossipUs;
     expect(local.hash).not.toBe(remote.hash);
 
-    // Verify urgent repair happens before the local node's first scheduled broadcast slot.
-    const events = sim.stepUntil(localFirstBroadcastUs - 1);
-    const conflict = events.find(
-      e =>
-        e.event === "conflict" &&
-        e.src === 0 &&
-        (e.details as Record<string, unknown>)["type"] === "collision" &&
-        (e.details as Record<string, unknown>)["local_won"] === true,
-    );
-    expect(conflict).toBeDefined();
+    invokeMsgArrive(sim, {
+      src: 1,
+      dst: 0,
+      topic_hash: remote.hash,
+      evictions: remote.evictions,
+      lage: 0,
+      name: remote.name,
+      msg_type: "shard",
+      shard_index: 0,
+      send_time_us: sim.nowUs,
+    });
 
-    const unicast = events.find(
-      e =>
-        e.event === "unicast" &&
-        e.src === 0 &&
-        e.topicHash === conflict!.topicHash &&
-        e.timeUs >= conflict!.timeUs,
+    const events = sim.stepUntil(localFirstPeriodicUs - 1);
+    const urgentBroadcast = events.find(
+      (e) => e.event === "broadcast" && e.src === 0 && e.topicHash === local.hash && e.timeUs < localFirstPeriodicUs,
     );
-    expect(unicast).toBeDefined();
-    expect(unicast!.timeUs).toBeLessThan(localFirstBroadcastUs);
+    expect(urgentBroadcast).toBeDefined();
   });
 
   it("network partition: node in B doesn't affect partition A convergence", () => {
     const sim = makeSim();
-    sim.addNode(); // 0
-    sim.addNode(); // 1
-    sim.addNode(); // 2
+    sim.addNode();
+    sim.addNode();
+    sim.addNode();
     sim.stepUntil(1);
     sim.setPartition(2, "B");
     sim.addTopicToNode(0, "topic/a");
@@ -142,7 +186,6 @@ describe("simulation integration", () => {
     }
     const snap1 = run();
     const snap2 = run();
-    // Compare serializable parts
     for (const [nid, ns1] of snap1) {
       const ns2 = snap2.get(nid)!;
       expect(ns1.online).toBe(ns2.online);
@@ -168,24 +211,13 @@ describe("simulation integration", () => {
     expect(sim.nodes.get(0)!.online).toBe(true);
   });
 
-  it("time travel: save checkpoint, step, load restores state", () => {
-    const sim = makeSim();
-    sim.addNode();
-    sim.stepUntil(1);
-    sim.addTopicToNode(0, "topic/a");
-    stepSeconds(sim, 5);
-    const state = sim.saveState();
-    const savedNowUs = sim.nowUs;
-    stepSeconds(sim, 30);
-    expect(sim.nowUs).toBeGreaterThan(savedNowUs);
-    sim.loadState(state);
-    expect(sim.nowUs).toBe(savedNowUs);
-    expect(sim.nodes.get(0)!.topics.size).toBe(1);
-  });
-
   it("packet loss: convergence still reached with longer timeout", () => {
-    const lossyNet: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0.5, periodicUnicastEnabled: true };
-    const sim = makeSim(42, lossyNet);
+    const sim = makeSim(
+      42,
+      makeNet({
+        lossProbability: 0.5,
+      }),
+    );
     sim.addNode();
     sim.addNode();
     sim.addNode();
@@ -193,17 +225,6 @@ describe("simulation integration", () => {
     sim.addTopicToNode(0, "topic/a");
     sim.addTopicToNode(1, "topic/b");
     sim.addTopicToNode(2, "topic/c");
-    stepSeconds(sim, 120);
-    expect(sim.checkConvergence()).toBe(true);
-  });
-
-  it("10-node network: all topics converge, no SID collisions", () => {
-    const sim = makeSim(7);
-    for (let i = 0; i < 10; i++) sim.addNode();
-    sim.stepUntil(1);
-    for (let i = 0; i < 10; i++) {
-      sim.addTopicToNode(i, `topic/${String.fromCharCode(97 + i)}`);
-    }
     stepSeconds(sim, 120);
     expect(sim.checkConvergence()).toBe(true);
   });

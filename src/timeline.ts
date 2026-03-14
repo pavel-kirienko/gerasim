@@ -7,6 +7,7 @@ import { EventLog } from "./event-log.js";
 
 const CODE_COLORS: Record<TimelineCode, string> = {
   GB: "#f1c40f",
+  GS: "#4dc3ff",
   GU: "#e67e22",
   GP: "#1abc9c",
   GF: "#9b59b6",
@@ -24,6 +25,7 @@ const CODE_COLORS: Record<TimelineCode, string> = {
 
 const CODE_NAMES: Record<TimelineCode, string> = {
   GB: "Gossip Broadcast",
+  GS: "Gossip Shard",
   GU: "Gossip Unicast",
   GP: "Gossip Periodic",
   GF: "Gossip Forward",
@@ -45,7 +47,7 @@ const AXIS_H = 16;
 const MARKER_FONT = "bold 7px monospace";
 const COLOCATED_SPACING = 8; // horizontal pixels between same-timestep markers
 const NET_BIN_US = 100_000; // 0.1s bins for network utilization chart
-const NET_MSG_CODES = new Set<TimelineCode>(["GB", "GU", "GP", "GF", "GR"]);
+const NET_MSG_CODES = new Set<TimelineCode>(["GB", "GS", "GU", "GP", "GF", "GR"]);
 
 export class Timeline {
   private canvas: HTMLCanvasElement;
@@ -57,7 +59,7 @@ export class Timeline {
 
   private viewStartUs = 0;
   private viewEndUs = 10_000_000; // 10s default
-  private nodeIds: number[] = [];       // all ever seen, sorted
+  private nodeIds: number[] = []; // all ever seen, sorted
   private nodeRowIndex = new Map<number, number>();
   private activeNodeIds = new Set<number>();
   private convergenceHistory: { timeUs: number; converged: boolean }[] = [];
@@ -70,8 +72,12 @@ export class Timeline {
   private lastCurrentTimeUs = 0;
 
   // Interaction state
-  private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
-  private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }
+  private get logicalW(): number {
+    return this.canvas.width / (window.devicePixelRatio || 1);
+  }
+  private get logicalH(): number {
+    return this.canvas.height / (window.devicePixelRatio || 1);
+  }
 
   private panning = false;
   private panLastX = 0;
@@ -82,11 +88,7 @@ export class Timeline {
   private userHasManuallyScrolled = false;
   private lastCursorX = 0; // cached cursor screen X for hit-testing
 
-  constructor(
-    canvas: HTMLCanvasElement,
-    tooltip: HTMLElement,
-    eventLog: EventLog,
-  ) {
+  constructor(canvas: HTMLCanvasElement, tooltip: HTMLElement, eventLog: EventLog) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
     this.tooltip = tooltip;
@@ -129,8 +131,10 @@ export class Timeline {
   }
 
   truncateConvergenceAfter(timeUs: number): void {
-    while (this.convergenceHistory.length > 0 &&
-           this.convergenceHistory[this.convergenceHistory.length - 1].timeUs > timeUs) {
+    while (
+      this.convergenceHistory.length > 0 &&
+      this.convergenceHistory[this.convergenceHistory.length - 1].timeUs > timeUs
+    ) {
       this.convergenceHistory.pop();
     }
   }
@@ -151,7 +155,10 @@ export class Timeline {
     let best: number | null = null;
     for (const ev of events) {
       const hi = ev.historyIndex;
-      if (dir === 1 && hi > cur) { best = hi; break; }
+      if (dir === 1 && hi > cur) {
+        best = hi;
+        break;
+      }
       if (dir === -1 && hi < cur) best = hi;
     }
     if (best !== null && best !== cur) {
@@ -299,9 +306,13 @@ export class Timeline {
       if (hasFocus) {
         const matchesHover = hover !== null && (ev.topicHash === hover || ev.secondaryTopicHash === hover);
         const matchesSticky = sticky !== null && (ev.topicHash === sticky || ev.secondaryTopicHash === sticky);
-        if (matchesHover) { /* full */ }
-        else if (matchesSticky) { baseAlpha *= (hover !== null ? 0.6 : 1.0); }
-        else { baseAlpha *= (hover !== null ? 0.15 : 0.3); }
+        if (matchesHover) {
+          /* full */
+        } else if (matchesSticky) {
+          baseAlpha *= hover !== null ? 0.6 : 1.0;
+        } else {
+          baseAlpha *= hover !== null ? 0.15 : 0.3;
+        }
       }
       const color = CODE_COLORS[ev.code];
       ctx.globalAlpha = baseAlpha;
@@ -335,7 +346,10 @@ export class Timeline {
     for (const ev of this.eventLog.events) {
       const key = `${ev.nodeId}:${ev.timeUs}`;
       let group = groups.get(key);
-      if (!group) { group = []; groups.set(key, group); }
+      if (!group) {
+        group = [];
+        groups.set(key, group);
+      }
       group.push(ev);
     }
     for (const group of groups.values()) {
@@ -383,9 +397,13 @@ export class Timeline {
       if (hasFocusA) {
         const matchesHover = hoverA !== null && (ev.topicHash === hoverA || ev.secondaryTopicHash === hoverA);
         const matchesSticky = stickyA !== null && (ev.topicHash === stickyA || ev.secondaryTopicHash === stickyA);
-        if (matchesHover) { /* full */ }
-        else if (matchesSticky) { arrowAlpha *= (hoverA !== null ? 0.6 : 1.0); }
-        else { arrowAlpha *= (hoverA !== null ? 0.15 : 0.2); }
+        if (matchesHover) {
+          /* full */
+        } else if (matchesSticky) {
+          arrowAlpha *= hoverA !== null ? 0.6 : 1.0;
+        } else {
+          arrowAlpha *= hoverA !== null ? 0.15 : 0.2;
+        }
       }
 
       const color = CODE_COLORS[ev.code];
@@ -487,7 +505,12 @@ export class Timeline {
       const avg = sum / MA_BINS;
       const x = this.timeToX((bin + 0.5) * NET_BIN_US);
       const ly = y + h - padding - (avg / maxCount) * chartH;
-      if (!started) { ctx.moveTo(x, ly); started = true; } else { ctx.lineTo(x, ly); }
+      if (!started) {
+        ctx.moveTo(x, ly);
+        started = true;
+      } else {
+        ctx.lineTo(x, ly);
+      }
     }
     ctx.stroke();
 
@@ -518,9 +541,7 @@ export class Timeline {
     return (total / MA_BINS) * (1_000_000 / NET_BIN_US);
   }
 
-  private drawTimeAxis(
-    ctx: CanvasRenderingContext2D, W: number, H: number, contentH: number,
-  ): void {
+  private drawTimeAxis(ctx: CanvasRenderingContext2D, W: number, H: number, contentH: number): void {
     ctx.fillStyle = "#222";
     ctx.fillRect(0, contentH, W, AXIS_H);
     ctx.strokeStyle = "#555";
@@ -537,7 +558,10 @@ export class Timeline {
     const intervals = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60];
     let tickS = 1;
     for (const iv of intervals) {
-      if (rangeS / iv < 20) { tickS = iv; break; }
+      if (rangeS / iv < 20) {
+        tickS = iv;
+        break;
+      }
     }
     const startTick = Math.ceil(this.viewStartUs / (tickS * 1_000_000));
     const endTick = Math.floor(this.viewEndUs / (tickS * 1_000_000));
@@ -560,9 +584,8 @@ export class Timeline {
 
     // Zoom indicator
     const zoomRangeMs = rangeUs / 1_000;
-    const zoomLabel = zoomRangeMs < 1000
-      ? `${zoomRangeMs.toFixed(zoomRangeMs < 10 ? 1 : 0)}ms`
-      : `${(zoomRangeMs / 1000).toFixed(1)}s`;
+    const zoomLabel =
+      zoomRangeMs < 1000 ? `${zoomRangeMs.toFixed(zoomRangeMs < 10 ? 1 : 0)}ms` : `${(zoomRangeMs / 1000).toFixed(1)}s`;
     ctx.font = "9px monospace";
     ctx.fillStyle = "#666";
     ctx.textAlign = "right";
@@ -570,10 +593,7 @@ export class Timeline {
     ctx.fillText(zoomLabel, W - 4, H - 2);
   }
 
-  private drawCursor(
-    ctx: CanvasRenderingContext2D, timeUs: number,
-    W: number, contentH: number, H: number,
-  ): void {
+  private drawCursor(ctx: CanvasRenderingContext2D, timeUs: number, W: number, contentH: number, H: number): void {
     const x = this.timeToX(timeUs);
     this.lastCursorX = x;
 
@@ -707,25 +727,29 @@ export class Timeline {
     });
 
     // Wheel: zoom around mouse; shift+wheel: horizontal scroll
-    canvas.addEventListener("wheel", (e) => {
-      e.preventDefault();
-      this.userHasManuallyScrolled = true;
-      const range = this.viewEndUs - this.viewStartUs;
-      if (e.shiftKey) {
-        // Horizontal scroll
-        const shift = range * 0.1 * (e.deltaY > 0 ? 1 : -1);
-        this.viewStartUs += shift;
-        this.viewEndUs += shift;
-      } else {
-        // Zoom around mouse position (plain wheel + ctrl/pinch)
-        const mouseTime = this.xToTime(e.offsetX);
-        const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
-        const newRange = Math.max(1_000, Math.min(range * factor, 600_000_000));
-        const mouseFrac = (mouseTime - this.viewStartUs) / range;
-        this.viewStartUs = mouseTime - mouseFrac * newRange;
-        this.viewEndUs = this.viewStartUs + newRange;
-      }
-    }, { passive: false });
+    canvas.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        this.userHasManuallyScrolled = true;
+        const range = this.viewEndUs - this.viewStartUs;
+        if (e.shiftKey) {
+          // Horizontal scroll
+          const shift = range * 0.1 * (e.deltaY > 0 ? 1 : -1);
+          this.viewStartUs += shift;
+          this.viewEndUs += shift;
+        } else {
+          // Zoom around mouse position (plain wheel + ctrl/pinch)
+          const mouseTime = this.xToTime(e.offsetX);
+          const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+          const newRange = Math.max(1_000, Math.min(range * factor, 600_000_000));
+          const mouseFrac = (mouseTime - this.viewStartUs) / range;
+          this.viewStartUs = mouseTime - mouseFrac * newRange;
+          this.viewEndUs = this.viewStartUs + newRange;
+        }
+      },
+      { passive: false },
+    );
 
     // Touch: one-finger horizontal pan, two-finger pinch-zoom
     let touchPanStartX = 0;
@@ -741,59 +765,69 @@ export class Timeline {
     let tlPinchViewStart = 0;
     let tlPinchViewEnd = 0;
 
-    canvas.addEventListener("touchstart", (e) => {
-      if (e.touches.length === 2) {
-        e.preventDefault();
-        touchPanning = false;
-        tlPinching = true;
-        const t0 = e.touches[0], t1 = e.touches[1];
-        tlPinchStartDist = Math.abs(t1.clientX - t0.clientX) || 1;
-        const rect = canvas.getBoundingClientRect();
-        tlPinchMidX = (t0.clientX + t1.clientX) / 2 - rect.left;
-        tlPinchViewStart = this.viewStartUs;
-        tlPinchViewEnd = this.viewEndUs;
-        const plotW = this.logicalW - GUTTER_W;
-        tlPinchMidFrac = plotW > 0 ? (tlPinchMidX - GUTTER_W) / plotW : 0.5;
-        tlPinchMidTime = this.viewStartUs + tlPinchMidFrac * (this.viewEndUs - this.viewStartUs);
-      } else if (e.touches.length === 1 && !tlPinching) {
-        e.preventDefault();
-        touchPanning = true;
-        const rect = canvas.getBoundingClientRect();
-        touchPanStartX = e.touches[0].clientX - rect.left;
-        touchStartX = touchPanStartX;
-        touchPanViewStart = this.viewStartUs;
-        touchPanViewEnd = this.viewEndUs;
-      }
-    }, { passive: false });
-
-    canvas.addEventListener("touchmove", (e) => {
-      if (tlPinching && e.touches.length >= 2) {
-        e.preventDefault();
-        const t0 = e.touches[0], t1 = e.touches[1];
-        const dist = Math.abs(t1.clientX - t0.clientX) || 1;
-        const scale = tlPinchStartDist / dist; // inverse: spread fingers = zoom in = smaller range
-
-        const origRange = tlPinchViewEnd - tlPinchViewStart;
-        const newRange = Math.max(1_000, Math.min(origRange * scale, 600_000_000));
-
-        this.viewStartUs = tlPinchMidTime - tlPinchMidFrac * newRange;
-        this.viewEndUs = this.viewStartUs + newRange;
-        this.userHasManuallyScrolled = true;
-      } else if (touchPanning && e.touches.length === 1) {
-        e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const x = e.touches[0].clientX - rect.left;
-        const dx = x - touchPanStartX;
-        const plotW = this.logicalW - GUTTER_W;
-        if (plotW > 0) {
-          const range = touchPanViewEnd - touchPanViewStart;
-          const shift = -(dx / plotW) * range;
-          this.viewStartUs = touchPanViewStart + shift;
-          this.viewEndUs = touchPanViewEnd + shift;
-          this.userHasManuallyScrolled = true;
+    canvas.addEventListener(
+      "touchstart",
+      (e) => {
+        if (e.touches.length === 2) {
+          e.preventDefault();
+          touchPanning = false;
+          tlPinching = true;
+          const t0 = e.touches[0],
+            t1 = e.touches[1];
+          tlPinchStartDist = Math.abs(t1.clientX - t0.clientX) || 1;
+          const rect = canvas.getBoundingClientRect();
+          tlPinchMidX = (t0.clientX + t1.clientX) / 2 - rect.left;
+          tlPinchViewStart = this.viewStartUs;
+          tlPinchViewEnd = this.viewEndUs;
+          const plotW = this.logicalW - GUTTER_W;
+          tlPinchMidFrac = plotW > 0 ? (tlPinchMidX - GUTTER_W) / plotW : 0.5;
+          tlPinchMidTime = this.viewStartUs + tlPinchMidFrac * (this.viewEndUs - this.viewStartUs);
+        } else if (e.touches.length === 1 && !tlPinching) {
+          e.preventDefault();
+          touchPanning = true;
+          const rect = canvas.getBoundingClientRect();
+          touchPanStartX = e.touches[0].clientX - rect.left;
+          touchStartX = touchPanStartX;
+          touchPanViewStart = this.viewStartUs;
+          touchPanViewEnd = this.viewEndUs;
         }
-      }
-    }, { passive: false });
+      },
+      { passive: false },
+    );
+
+    canvas.addEventListener(
+      "touchmove",
+      (e) => {
+        if (tlPinching && e.touches.length >= 2) {
+          e.preventDefault();
+          const t0 = e.touches[0],
+            t1 = e.touches[1];
+          const dist = Math.abs(t1.clientX - t0.clientX) || 1;
+          const scale = tlPinchStartDist / dist; // inverse: spread fingers = zoom in = smaller range
+
+          const origRange = tlPinchViewEnd - tlPinchViewStart;
+          const newRange = Math.max(1_000, Math.min(origRange * scale, 600_000_000));
+
+          this.viewStartUs = tlPinchMidTime - tlPinchMidFrac * newRange;
+          this.viewEndUs = this.viewStartUs + newRange;
+          this.userHasManuallyScrolled = true;
+        } else if (touchPanning && e.touches.length === 1) {
+          e.preventDefault();
+          const rect = canvas.getBoundingClientRect();
+          const x = e.touches[0].clientX - rect.left;
+          const dx = x - touchPanStartX;
+          const plotW = this.logicalW - GUTTER_W;
+          if (plotW > 0) {
+            const range = touchPanViewEnd - touchPanViewStart;
+            const shift = -(dx / plotW) * range;
+            this.viewStartUs = touchPanViewStart + shift;
+            this.viewEndUs = touchPanViewEnd + shift;
+            this.userHasManuallyScrolled = true;
+          }
+        }
+      },
+      { passive: false },
+    );
 
     canvas.addEventListener("touchend", (e) => {
       if (e.touches.length < 2) tlPinching = false;
@@ -820,7 +854,8 @@ export class Timeline {
     // Binary search for nearest history index
     const times = this.historyTimes;
     if (times.length === 0) return;
-    let lo = 0, hi = times.length - 1;
+    let lo = 0,
+      hi = times.length - 1;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
       if (times[mid] <= timeUs) lo = mid;
@@ -868,7 +903,8 @@ export class Timeline {
       const rowIdx = this.nodeRowIndex.get(ev.nodeId) ?? -1;
       if (rowIdx < 0) continue;
       const ey = (rowIdx + 1) * ROW_H + ROW_H / 2;
-      const dx = x - ex, dy = y - ey;
+      const dx = x - ex,
+        dy = y - ey;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < hitRadius) {
         hits.push({ ev, dist });
@@ -877,7 +913,7 @@ export class Timeline {
 
     if (hits.length > 0) {
       hits.sort((a, b) => a.dist - b.dist);
-      const evs = hits.map(h => h.ev);
+      const evs = hits.map((h) => h.ev);
       // Only update if the set of hovered events changed
       if (evs.length !== this.hoveredEvents.length || evs.some((e, i) => e !== this.hoveredEvents[i])) {
         this.hoveredEvents = evs;
@@ -922,15 +958,15 @@ export class Timeline {
     return null;
   }
 
-  private pointToSegmentDist(
-    px: number, py: number, x0: number, y0: number, x1: number, y1: number,
-  ): number {
-    const dx = x1 - x0, dy = y1 - y0;
+  private pointToSegmentDist(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
+    const dx = x1 - x0,
+      dy = y1 - y0;
     const lenSq = dx * dx + dy * dy;
     if (lenSq === 0) return Math.sqrt((px - x0) ** 2 + (py - y0) ** 2);
     let t = ((px - x0) * dx + (py - y0) * dy) / lenSq;
     t = Math.max(0, Math.min(1, t));
-    const cx = x0 + t * dx, cy = y0 + t * dy;
+    const cx = x0 + t * dx,
+      cy = y0 + t * dy;
     return Math.sqrt((px - cx) ** 2 + (py - cy) ** 2);
   }
 
@@ -939,6 +975,8 @@ export class Timeline {
     const d = ev.details;
     let text = `${ev.code} - ${name}  Node${ev.nodeId}  ${(ev.timeUs / 1_000_000).toFixed(3)}s`;
     if (d.name) text += `  Topic: ${d.name}`;
+    if (d.shardIndex !== undefined) text += `  Shard: ${d.shardIndex}`;
+    if (Array.isArray(d.listeners)) text += `  Listeners: ${d.listeners.length}`;
     if (d.remote_name) text += `  Remote topic: ${d.remote_name}`;
     if (d.evictions !== undefined) text += `  Evictions: ${d.evictions}`;
     if (d.lage !== undefined) text += `  Lage: ${d.lage}`;
@@ -959,7 +997,7 @@ export class Timeline {
   }
 
   private showTooltip(evs: TimelineEvent[], x: number, y: number): void {
-    const text = evs.map(ev => this.formatEvent(ev)).join("\n");
+    const text = evs.map((ev) => this.formatEvent(ev)).join("\n");
     this.tooltip.style.textAlign = "";
     this.tooltip.textContent = text;
     this.tooltip.style.display = "block";

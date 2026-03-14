@@ -20,42 +20,51 @@ export class Viewport {
   private wrapper: HTMLElement | null = null;
   private container: HTMLElement | null = null;
 
-  get currentZoom(): number { return this.zoom; }
+  get currentZoom(): number {
+    return this.zoom;
+  }
 
   attach(container: HTMLElement): void {
     this.container = container;
 
     // Wheel zoom (centered on cursor)
-    container.addEventListener("wheel", (e) => {
-      // Don't zoom if scrolling inside a scrollable child element
-      const target = e.target as HTMLElement;
-      const scrollable = target.closest(".nb-topics");
-      if (scrollable) {
-        const el = scrollable as HTMLElement;
-        const atTop = el.scrollTop === 0 && e.deltaY < 0;
-        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight && e.deltaY > 0;
-        if (!atTop && !atBottom) return;
-      }
-      e.preventDefault();
-      const rect = container.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
+    container.addEventListener(
+      "wheel",
+      (e) => {
+        // Don't zoom if scrolling inside a scrollable child element
+        const target = e.target as HTMLElement;
+        const scrollable = target.closest(".nb-topics");
+        if (scrollable) {
+          const el = scrollable as HTMLElement;
+          const atTop = el.scrollTop === 0 && e.deltaY < 0;
+          const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight && e.deltaY > 0;
+          if (!atTop && !atBottom) return;
+        }
+        e.preventDefault();
+        const rect = container.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
 
-      const oldZoom = this.zoom;
-      const delta = -e.deltaY * ZOOM_SPEED;
-      this.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this.zoom * (1 + delta)));
+        const oldZoom = this.zoom;
+        const delta = -e.deltaY * ZOOM_SPEED;
+        this.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this.zoom * (1 + delta)));
 
-      // Adjust pan so point under cursor stays fixed
-      const scale = this.zoom / oldZoom;
-      this.panX = mx - scale * (mx - this.panX);
-      this.panY = my - scale * (my - this.panY);
+        // Adjust pan so point under cursor stays fixed
+        const scale = this.zoom / oldZoom;
+        this.panX = mx - scale * (mx - this.panX);
+        this.panY = my - scale * (my - this.panY);
 
-      this.applyToWrapper();
-    }, { passive: false });
+        this.applyToWrapper();
+      },
+      { passive: false },
+    );
 
     // Left-click, middle-click, or Ctrl+drag pan
     let panning = false;
-    let startX = 0, startY = 0, startPanX = 0, startPanY = 0;
+    let startX = 0,
+      startY = 0,
+      startPanX = 0,
+      startPanY = 0;
 
     container.addEventListener("mousedown", (e) => {
       const tag = (e.target as HTMLElement).tagName;
@@ -77,73 +86,92 @@ export class Viewport {
       this.applyToWrapper();
     };
 
-    const onUp = () => { panning = false; };
+    const onUp = () => {
+      panning = false;
+    };
 
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
 
     // Touch: one-finger pan, two-finger pinch-zoom
     let touchPanning = false;
-    let touchStartX = 0, touchStartY = 0, touchStartPanX = 0, touchStartPanY = 0;
+    let touchStartX = 0,
+      touchStartY = 0,
+      touchStartPanX = 0,
+      touchStartPanY = 0;
     let pinching = false;
     let pinchStartDist = 0;
     let pinchStartZoom = 0;
-    let pinchStartPanX = 0, pinchStartPanY = 0;
-    let pinchMidX = 0, pinchMidY = 0;
+    let pinchStartPanX = 0,
+      pinchStartPanY = 0;
+    let pinchMidX = 0,
+      pinchMidY = 0;
 
-    container.addEventListener("touchstart", (e) => {
-      if (e.touches.length === 2) {
-        e.preventDefault();
-        touchPanning = false;
-        pinching = true;
-        const rect = container.getBoundingClientRect();
-        const t0 = e.touches[0], t1 = e.touches[1];
-        const dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
-        pinchStartDist = Math.sqrt(dx * dx + dy * dy);
-        pinchStartZoom = this.zoom;
-        pinchStartPanX = this.panX;
-        pinchStartPanY = this.panY;
-        pinchMidX = (t0.clientX + t1.clientX) / 2 - rect.left;
-        pinchMidY = (t0.clientY + t1.clientY) / 2 - rect.top;
-      } else if (e.touches.length === 1 && !pinching) {
-        const tag = (e.target as HTMLElement).tagName;
-        if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT" || tag === "A") return;
-        e.preventDefault();
-        touchPanning = true;
-        touchStartX = e.touches[0].clientX;
-        touchStartY = e.touches[0].clientY;
-        touchStartPanX = this.panX;
-        touchStartPanY = this.panY;
-      }
-    }, { passive: false });
+    container.addEventListener(
+      "touchstart",
+      (e) => {
+        if (e.touches.length === 2) {
+          e.preventDefault();
+          touchPanning = false;
+          pinching = true;
+          const rect = container.getBoundingClientRect();
+          const t0 = e.touches[0],
+            t1 = e.touches[1];
+          const dx = t1.clientX - t0.clientX,
+            dy = t1.clientY - t0.clientY;
+          pinchStartDist = Math.sqrt(dx * dx + dy * dy);
+          pinchStartZoom = this.zoom;
+          pinchStartPanX = this.panX;
+          pinchStartPanY = this.panY;
+          pinchMidX = (t0.clientX + t1.clientX) / 2 - rect.left;
+          pinchMidY = (t0.clientY + t1.clientY) / 2 - rect.top;
+        } else if (e.touches.length === 1 && !pinching) {
+          const tag = (e.target as HTMLElement).tagName;
+          if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT" || tag === "A") return;
+          e.preventDefault();
+          touchPanning = true;
+          touchStartX = e.touches[0].clientX;
+          touchStartY = e.touches[0].clientY;
+          touchStartPanX = this.panX;
+          touchStartPanY = this.panY;
+        }
+      },
+      { passive: false },
+    );
 
-    container.addEventListener("touchmove", (e) => {
-      if (pinching && e.touches.length >= 2) {
-        e.preventDefault();
-        const rect = container.getBoundingClientRect();
-        const t0 = e.touches[0], t1 = e.touches[1];
-        const dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const scale = dist / pinchStartDist;
-        const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchStartZoom * scale));
-        const zoomRatio = newZoom / pinchStartZoom;
+    container.addEventListener(
+      "touchmove",
+      (e) => {
+        if (pinching && e.touches.length >= 2) {
+          e.preventDefault();
+          const rect = container.getBoundingClientRect();
+          const t0 = e.touches[0],
+            t1 = e.touches[1];
+          const dx = t1.clientX - t0.clientX,
+            dy = t1.clientY - t0.clientY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const scale = dist / pinchStartDist;
+          const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchStartZoom * scale));
+          const zoomRatio = newZoom / pinchStartZoom;
 
-        // New midpoint for simultaneous pan
-        const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
-        const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+          // New midpoint for simultaneous pan
+          const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+          const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
 
-        // Zoom around original midpoint, then shift by midpoint movement
-        this.panX = pinchStartPanX + (midX - pinchMidX) - (zoomRatio - 1) * (pinchMidX - pinchStartPanX);
-        this.panY = pinchStartPanY + (midY - pinchMidY) - (zoomRatio - 1) * (pinchMidY - pinchStartPanY);
-        this.zoom = newZoom;
-        this.applyToWrapper();
-      } else if (touchPanning && e.touches.length === 1) {
-        e.preventDefault();
-        this.panX = touchStartPanX + (e.touches[0].clientX - touchStartX);
-        this.panY = touchStartPanY + (e.touches[0].clientY - touchStartY);
-        this.applyToWrapper();
-      }
-    }, { passive: false });
+          // Zoom around original midpoint, then shift by midpoint movement
+          this.panX = pinchStartPanX + (midX - pinchMidX) - (zoomRatio - 1) * (pinchMidX - pinchStartPanX);
+          this.panY = pinchStartPanY + (midY - pinchMidY) - (zoomRatio - 1) * (pinchMidY - pinchStartPanY);
+          this.zoom = newZoom;
+          this.applyToWrapper();
+        } else if (touchPanning && e.touches.length === 1) {
+          e.preventDefault();
+          this.panX = touchStartPanX + (e.touches[0].clientX - touchStartX);
+          this.panY = touchStartPanY + (e.touches[0].clientY - touchStartY);
+          this.applyToWrapper();
+        }
+      },
+      { passive: false },
+    );
 
     container.addEventListener("touchend", (e) => {
       if (e.touches.length < 2) pinching = false;
@@ -174,15 +202,20 @@ export class Viewport {
   zoomToFit(
     nodePositions: Map<number, { x: number; y: number }>,
     boxSizes: Map<number, { w: number; h: number }>,
-    vpW: number, vpH: number,
+    vpW: number,
+    vpH: number,
     padding = 80,
   ): void {
     if (nodePositions.size === 0) return;
 
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
     for (const [nid, pos] of nodePositions) {
       const sz = boxSizes.get(nid) || { w: 260, h: 300 };
-      const hw = sz.w / 2, hh = sz.h / 2;
+      const hw = sz.w / 2,
+        hh = sz.h / 2;
       if (pos.x - hw < minX) minX = pos.x - hw;
       if (pos.y - hh < minY) minY = pos.y - hh;
       if (pos.x + hw > maxX) maxX = pos.x + hw;

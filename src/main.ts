@@ -4,7 +4,16 @@
 
 import { NetworkConfig, EventRecord } from "./types.js";
 import { Simulation, SimState } from "./sim.js";
-import { LAGE_MIN } from "./constants.js";
+import {
+  LAGE_MIN,
+  DEFAULT_SHARD_COUNT,
+  DEFAULT_GOSSIP_STARTUP_DELAY,
+  DEFAULT_GOSSIP_BROADCAST_FRACTION,
+  DEFAULT_GOSSIP_DITHER,
+  DEFAULT_GOSSIP_PERIOD,
+  DEFAULT_GOSSIP_URGENT_DELAY,
+  SUBJECT_ID_MODULUS,
+} from "./constants.js";
 import { Renderer } from "./render.js";
 import { UI } from "./ui.js";
 import { EventLog } from "./event-log.js";
@@ -43,12 +52,20 @@ function sharedTopicName(index: number): string {
 
 function createSim(seed?: number): Simulation {
   if (seed === undefined) {
-    seed = Math.random() * 0xFFFFFFFF | 0;
+    seed = (Math.random() * 0xffffffff) | 0;
   }
   const net: NetworkConfig = {
-    delayUs: [1_000, 10_000],
+    delay: [0.001, 0.01],
     lossProbability: 0.0,
-    periodicUnicastEnabled: false,
+    protocol: {
+      subjectIdModulus: SUBJECT_ID_MODULUS,
+      shardCount: DEFAULT_SHARD_COUNT,
+      gossipStartupDelay: DEFAULT_GOSSIP_STARTUP_DELAY,
+      gossipPeriod: DEFAULT_GOSSIP_PERIOD,
+      gossipDither: DEFAULT_GOSSIP_DITHER,
+      gossipBroadcastFraction: DEFAULT_GOSSIP_BROADCAST_FRACTION,
+      gossipUrgentDelay: DEFAULT_GOSSIP_URGENT_DELAY,
+    },
   };
   const s = new Simulation(net, seed);
   for (let i = 0; i < INITIAL_NODES; i++) {
@@ -83,12 +100,7 @@ function relayout(): void {
 
 function zoomToFit(): void {
   const container = canvas.parentElement!;
-  viewport.zoomToFit(
-    renderer.nodePositions,
-    new Map(),
-    container.clientWidth,
-    container.clientHeight,
-  );
+  viewport.zoomToFit(renderer.nodePositions, new Map(), container.clientWidth, container.clientHeight);
   viewport.applyToWrapper();
 }
 
@@ -201,16 +213,32 @@ function navigateTo(index: number): void {
 function resetWithConfig(config: {
   seed: number;
   network?: {
-    delay_us?: [number, number];
+    delay?: [number, number];
     loss_probability?: number;
-    periodic_unicast?: boolean;
+  };
+  protocol?: {
+    subject_id_modulus?: number;
+    shard_count?: number;
+    gossip_startup_delay?: number;
+    gossip_period?: number;
+    gossip_dither?: number;
+    gossip_broadcast_fraction?: number;
+    gossip_urgent_delay?: number;
   };
   nodes: { topics?: { name: string; evictions?: number; lage?: number }[] }[];
 }): void {
   const net: NetworkConfig = {
-    delayUs: config.network?.delay_us ?? [1_000, 10_000],
+    delay: config.network?.delay ?? [0.001, 0.01],
     lossProbability: config.network?.loss_probability ?? 0.0,
-    periodicUnicastEnabled: config.network?.periodic_unicast ?? false,
+    protocol: {
+      subjectIdModulus: config.protocol?.subject_id_modulus ?? SUBJECT_ID_MODULUS,
+      shardCount: config.protocol?.shard_count ?? DEFAULT_SHARD_COUNT,
+      gossipStartupDelay: config.protocol?.gossip_startup_delay ?? DEFAULT_GOSSIP_STARTUP_DELAY,
+      gossipPeriod: config.protocol?.gossip_period ?? DEFAULT_GOSSIP_PERIOD,
+      gossipDither: config.protocol?.gossip_dither ?? DEFAULT_GOSSIP_DITHER,
+      gossipBroadcastFraction: config.protocol?.gossip_broadcast_fraction ?? DEFAULT_GOSSIP_BROADCAST_FRACTION,
+      gossipUrgentDelay: config.protocol?.gossip_urgent_delay ?? DEFAULT_GOSSIP_URGENT_DELAY,
+    },
   };
   const s = new Simulation(net, config.seed);
   config.nodes.forEach((n, i) => {

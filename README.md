@@ -10,7 +10,7 @@
 
 </div>
 
------
+---
 
 Simulator and visualizer of the Cyphal v1.1 distributed consensus algorithm. The protocol reference implementation and specification are available in `submodules/cy`.
 

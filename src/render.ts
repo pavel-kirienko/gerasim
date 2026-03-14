@@ -4,26 +4,26 @@
 
 import { EventRecord, NodeSnapshot } from "./types.js";
 import { EventLog } from "./event-log.js";
-import {
-  MSG_PERSIST_US, BROADCAST_PERSIST_US, CONFLICT_FLASH_US,
-  PROPAGATION_SPEED,
-} from "./constants.js";
+import { MSG_PERSIST_US, BROADCAST_PERSIST_US, CONFLICT_FLASH_US, PROPAGATION_SPEED } from "./constants.js";
 import { Viewport } from "./viewport.js";
 
 // Colors
-const C_BG          = "#000000";
-const C_BROADCAST   = "#f1c40f"; // yellow expanding circle
-const C_UNICAST     = "#e67e22";
-const C_PERIODIC    = "#1abc9c";
-const C_FORWARD     = "#9b59b6";
+const C_BG = "#000000";
+const C_BROADCAST = "#f1c40f"; // yellow expanding circle
+const C_UNICAST = "#e67e22";
+const C_PERIODIC = "#1abc9c";
+const C_FORWARD = "#9b59b6";
+const C_SHARD_FALLBACK = "#4dc3ff";
 
-const BOX_WIDTH     = 320;
+const BOX_WIDTH = 320;
+const LOOPBACK_RADIUS = 72;
 
 interface ActiveArrow {
   startUs: number;
-  arriveUs: number;   // when message reaches destination
-  expireUs: number;   // when arrow disappears (arriveUs + MSG_PERSIST_US)
+  arriveUs: number; // when message reaches destination
+  expireUs: number; // when arrow disappears (arriveUs + MSG_PERSIST_US)
   event: EventRecord;
+  loopback: boolean;
 }
 
 interface ActiveBroadcast {
@@ -31,6 +31,12 @@ interface ActiveBroadcast {
   startUs: number;
   src: number;
   event: EventRecord;
+}
+
+function noListenerShardLoopScale(ev: EventRecord): number {
+  if (ev.event !== "shard") return 1;
+  const listeners = ev.details.listeners;
+  return Array.isArray(listeners) && listeners.length === 0 ? 3 : 1;
 }
 
 export class Renderer {
@@ -48,11 +54,14 @@ export class Renderer {
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
   private activeConflicts: Map<number, number> = new Map(); // nodeId -> flashUntilUs
-  private activePeerFlashes = new Map<string, number>(); // "nodeId:peerIdx" → flashUntilUs
   hoveredNodeId: number | null = null;
 
-  private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
-  private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }
+  private get logicalW(): number {
+    return this.canvas.width / (window.devicePixelRatio || 1);
+  }
+  private get logicalH(): number {
+    return this.canvas.height / (window.devicePixelRatio || 1);
+  }
 
   constructor(canvas: HTMLCanvasElement, viewport: Viewport, tooltip?: HTMLElement) {
     this.canvas = canvas;
@@ -77,51 +86,45 @@ export class Renderer {
     return until !== undefined && until >= this.lastTimeUs;
   }
 
-  getPeerFlashIndices(nid: number): Set<number> {
-    const result = new Set<number>();
-    for (const [key, until] of this.activePeerFlashes) {
-      if (until < this.lastTimeUs) continue;
-      const sep = key.indexOf(":");
-      if (parseInt(key.slice(0, sep)) === nid) result.add(parseInt(key.slice(sep + 1)));
-    }
-    return result;
-  }
-
   clearAnimations(): void {
     this.activeArrows = [];
     this.activeBroadcasts = [];
     this.activeConflicts.clear();
-    this.activePeerFlashes.clear();
   }
 
   rebuildAnimationsFromLog(eventLog: EventLog, currentTimeUs: number): void {
     this.activeArrows = [];
     this.activeBroadcasts = [];
     this.activeConflicts.clear();
-    this.activePeerFlashes.clear();
 
     for (const ev of eventLog.events) {
       if (ev.timeUs > currentTimeUs) continue;
 
-      if (ev.code === "GU" || ev.code === "GP" || ev.code === "GF") {
+      if (ev.code === "GS") {
+        const rec: EventRecord = {
+          timeUs: ev.timeUs,
+          event: "shard",
+          src: ev.nodeId,
+          dst: null,
+          topicHash: ev.topicHash,
+          details: ev.details,
+        };
+        this.expandShardArrows(rec, ev.timeUs, currentTimeUs);
+      } else if (ev.code === "GU" || ev.code === "GP" || ev.code === "GF") {
         const delayUs = (ev.details.delayUs as number) || 0;
         if (delayUs <= 0) continue;
         const dst = ev.details.dst as number;
         if (dst === undefined || dst === null) continue;
-        const arriveUs = ev.timeUs + delayUs;
-        const expireUs = arriveUs + MSG_PERSIST_US;
-        if (currentTimeUs >= expireUs) continue;
 
         const rec: EventRecord = {
           timeUs: ev.timeUs,
-          event: ev.code === "GU" ? "unicast" : (ev.code === "GP" ? "periodic_unicast" : "forward"),
+          event: ev.code === "GU" ? "unicast" : ev.code === "GP" ? "periodic_unicast" : "forward",
           src: ev.nodeId,
           dst,
           topicHash: ev.topicHash,
           details: ev.details,
         };
-        this.activeArrows.push({ startUs: ev.timeUs, arriveUs, expireUs, event: rec });
-
+        this.addArrow(rec, ev.timeUs, delayUs, false, currentTimeUs);
       } else if (ev.code === "GB") {
         const expireUs = ev.timeUs + BROADCAST_PERSIST_US;
         if (currentTimeUs >= expireUs) continue;
@@ -135,13 +138,6 @@ export class Renderer {
           details: ev.details,
         };
         this.activeBroadcasts.push({ startUs: ev.timeUs, expireUs, src: ev.nodeId, event: rec });
-      } else if (ev.code === "PR") {
-        const flashUntil = ev.timeUs + 1_000_000;
-        if (currentTimeUs >= flashUntil) continue;
-        const peerIdx = ev.details.peerIdx as number;
-        if (peerIdx !== undefined) {
-          this.activePeerFlashes.set(`${ev.nodeId}:${peerIdx}`, flashUntil);
-        }
       }
     }
   }
@@ -150,7 +146,7 @@ export class Renderer {
     const n = nodeIds.length;
     if (n === 0) return;
     // Circumference-based radius, centered at world origin (0,0)
-    const radius = Math.max(400, n * 320 / (2 * Math.PI));
+    const radius = Math.max(400, (n * 320) / (2 * Math.PI));
     this.nodePositions.clear();
     for (let i = 0; i < n; i++) {
       const angle = (2 * Math.PI * i) / n - Math.PI / 2;
@@ -161,11 +157,58 @@ export class Renderer {
     }
   }
 
-  render(
-    timeUs: number,
-    snaps: Map<number, NodeSnapshot>,
-    newEvents: EventRecord[],
+  private shardColor(shardIndex: number | undefined): string {
+    if (shardIndex === undefined || Number.isNaN(shardIndex)) {
+      return C_SHARD_FALLBACK;
+    }
+    const hue = (((Math.floor(shardIndex) * 137.508) % 360) + 360) % 360;
+    return `hsl(${hue.toFixed(1)} 78% 60%)`;
+  }
+
+  private addArrow(
+    event: EventRecord,
+    startUs: number,
+    delayUs: number,
+    loopback: boolean,
+    currentTimeUs?: number,
   ): void {
+    const arriveUs = startUs + delayUs;
+    const expireUs = arriveUs + MSG_PERSIST_US;
+    if (currentTimeUs !== undefined && currentTimeUs >= expireUs) return;
+    this.activeArrows.push({
+      startUs,
+      arriveUs,
+      expireUs,
+      event,
+      loopback,
+    });
+  }
+
+  private expandShardArrows(ev: EventRecord, startUs: number, currentTimeUs?: number): void {
+    const listeners = Array.isArray(ev.details.listeners) ? (ev.details.listeners as number[]) : [];
+    const delayMap = (ev.details.listenerDelays as Record<string, number> | undefined) ?? {};
+    if (listeners.length === 0) {
+      const loopDelayUs = 200_000;
+      const rec: EventRecord = {
+        ...ev,
+        dst: ev.src,
+        details: { ...ev.details, delayUs: loopDelayUs, loopback: true },
+      };
+      this.addArrow(rec, startUs, loopDelayUs, true, currentTimeUs);
+      return;
+    }
+    for (const dst of listeners) {
+      const delayUs = delayMap[String(dst)] ?? 200_000;
+      const rec: EventRecord = {
+        ...ev,
+        dst,
+        details: { ...ev.details, delayUs, loopback: false },
+      };
+      this.addArrow(rec, startUs, delayUs, false, currentTimeUs);
+    }
+  }
+
+  render(timeUs: number, snaps: Map<number, NodeSnapshot>, newEvents: EventRecord[]): void {
     this.lastSnaps = snaps;
     this.lastTimeUs = timeUs;
     const ctx = this.ctx;
@@ -190,58 +233,32 @@ export class Renderer {
           src: ev.src,
           event: ev,
         });
+      } else if (ev.event === "shard") {
+        this.expandShardArrows(ev, timeUs);
       } else if (ev.event === "unicast" || ev.event === "periodic_unicast" || ev.event === "forward") {
         const delayUs = (ev.details?.delayUs as number) || 500_000;
-        this.activeArrows.push({
-          startUs: timeUs,
-          arriveUs: timeUs + delayUs,
-          expireUs: timeUs + delayUs + MSG_PERSIST_US,
-          event: ev,
-        });
+        this.addArrow(ev, timeUs, delayUs, false);
       }
       if (ev.event === "conflict") {
         this.activeConflicts.set(ev.src, timeUs + CONFLICT_FLASH_US);
       }
-      if (ev.event === "peer_refresh") {
-        this.activePeerFlashes.set(`${ev.src}:${ev.details?.peerIdx}`, timeUs + 1_000_000);
-      }
     }
-    this.activeArrows = this.activeArrows.filter(m => m.expireUs > timeUs);
-    this.activeBroadcasts = this.activeBroadcasts.filter(m => m.expireUs > timeUs);
+    this.activeArrows = this.activeArrows.filter((m) => m.expireUs > timeUs);
+    this.activeBroadcasts = this.activeBroadcasts.filter((m) => m.expireUs > timeUs);
 
     // Draw broadcast circles (behind everything)
     this.drawBroadcasts(ctx, timeUs);
 
-    // Draw unicast/forward arrows (behind nodes)
-    this.drawArrows(ctx, timeUs, snaps);
-
-    // Draw peer lines on hover
-    if (this.hoveredNodeId !== null) {
-      const snap = snaps.get(this.hoveredNodeId);
-      const srcPos = this.nodePositions.get(this.hoveredNodeId);
-      if (snap && srcPos) {
-        ctx.save();
-        ctx.strokeStyle = "#00ff00";
-        ctx.lineWidth = 1;
-        for (const p of snap.peers) {
-          if (!p) continue;
-          const dstPos = this.nodePositions.get(p.nodeId);
-          if (!dstPos) continue;
-          ctx.beginPath();
-          ctx.moveTo(srcPos.x, srcPos.y);
-          ctx.lineTo(dstPos.x, dstPos.y);
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
-    }
+    // Draw point-to-point arrows (behind nodes)
+    this.drawArrows(ctx, timeUs);
   }
 
   // -- Info box helper --
 
   private drawInfoBox(
     ctx: CanvasRenderingContext2D,
-    x: number, y: number,
+    x: number,
+    y: number,
     lines: string[],
     textColor: string,
     alpha: number,
@@ -298,9 +315,13 @@ export class Renderer {
       const matchesHover = hover !== null && bc.event.topicHash === hover;
       const matchesSticky = sticky !== null && bc.event.topicHash === sticky;
       if (hasFocus) {
-        if (matchesHover) { /* full */ }
-        else if (matchesSticky) { alpha *= (hover !== null ? 0.6 : 1.0); }
-        else { alpha *= (hover !== null ? 0.15 : 0.3); }
+        if (matchesHover) {
+          /* full */
+        } else if (matchesSticky) {
+          alpha *= hover !== null ? 0.6 : 1.0;
+        } else {
+          alpha *= hover !== null ? 0.15 : 0.3;
+        }
       }
 
       ctx.save();
@@ -316,67 +337,53 @@ export class Renderer {
       if (hasFocus && !matchesHover && !matchesSticky) continue;
       const d = bc.event.details || {};
       const bName = (d.name as string) || "?";
-      const bSid = d.subjectId as number ?? "?";
-      const bEv = d.evictions as number ?? "?";
-      const bLage = d.lage as number ?? "?";
-      const infoLines = [
-        `${bName}  S=${bSid}`,
-        `ev=${bEv}  lage=${bLage}`,
-      ];
+      const bSid = (d.subjectId as number) ?? "?";
+      const bEv = (d.evictions as number) ?? "?";
+      const bLage = (d.lage as number) ?? "?";
+      const infoLines = [`${bName}  S=${bSid}`, `ev=${bEv}  lage=${bLage}`];
       const srcBox = this.getBoxSize(bc.src);
       this.drawInfoBox(ctx, srcPos.x + srcBox.w / 2 + 10, srcPos.y - 20, infoLines, C_BROADCAST, alpha);
     }
   }
 
-  // -- Unicast/forward arrows --
+  // -- Point-to-point arrows --
 
-  private drawArrows(
-    ctx: CanvasRenderingContext2D, timeUs: number,
-    _snaps: Map<number, NodeSnapshot>,
-  ): void {
+  private drawArrows(ctx: CanvasRenderingContext2D, timeUs: number): void {
     for (const msg of this.activeArrows) {
       const ev = msg.event;
 
       let color: string, lineWidth: number, dashed: boolean;
-      if (ev.event === "unicast") {
-        color = C_UNICAST; lineWidth = 2.0; dashed = false;
+      if (ev.event === "shard") {
+        color = this.shardColor(ev.details.shardIndex as number | undefined);
+        lineWidth = 2.0;
+        dashed = false;
+      } else if (ev.event === "unicast") {
+        color = C_UNICAST;
+        lineWidth = 2.0;
+        dashed = false;
       } else if (ev.event === "periodic_unicast") {
-        color = C_PERIODIC; lineWidth = 2.0; dashed = false;
+        color = C_PERIODIC;
+        lineWidth = 2.0;
+        dashed = false;
       } else {
-        color = C_FORWARD; lineWidth = 1.5; dashed = true;
+        color = C_FORWARD;
+        lineWidth = 1.5;
+        dashed = true;
       }
 
       const srcPos = this.nodePositions.get(ev.src);
       if (!srcPos || ev.dst === null) continue;
 
-      const dstPos = this.nodePositions.get(ev.dst);
-      if (!dstPos) continue;
-
-      const srcBox = this.getBoxSize(ev.src);
-      const dstBox = this.getBoxSize(ev.dst);
-      const [x0, y0] = this.edgePoint(srcPos.x, srcPos.y, srcBox.w, srcBox.h, dstPos.x, dstPos.y);
-      const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
-
-      // Bezier control point (slight curve)
-      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-      const dx = x1 - x0, dy = y1 - y0;
-      const len = Math.sqrt(dx * dx + dy * dy);
-      const off = len * 0.08;
-      const nx = -dy / (len || 1), ny = dx / (len || 1);
-      const cpx = mx + nx * off, cpy = my + ny * off;
-
       let alpha: number;
       let headX: number, headY: number;
 
-      if (timeUs < msg.arriveUs) {
-        const travelDuration = msg.arriveUs - msg.startUs;
-        const travelFrac = Math.min(1, (timeUs - msg.startUs) / (travelDuration || 1));
-        alpha = 0.9;
-      } else {
+      if (timeUs >= msg.arriveUs) {
         const lingerTotal = msg.expireUs - msg.arriveUs;
         const lingerElapsed = timeUs - msg.arriveUs;
         const lingerFrac = lingerTotal > 0 ? lingerElapsed / lingerTotal : 1;
         alpha = lingerFrac < 0.7 ? 0.9 : Math.max(0.1, 0.9 * (1 - (lingerFrac - 0.7) / 0.3));
+      } else {
+        alpha = 0.9;
       }
 
       // Dim if a topic is focused and this arrow doesn't match
@@ -386,54 +393,161 @@ export class Renderer {
       const matchesHover = hover !== null && ev.topicHash === hover;
       const matchesSticky = sticky !== null && ev.topicHash === sticky;
       if (hasFocus) {
-        if (matchesHover) { /* full */ }
-        else if (matchesSticky) { alpha *= (hover !== null ? 0.6 : 1.0); }
-        else { alpha *= (hover !== null ? 0.15 : 0.3); }
+        if (matchesHover) {
+          /* full */
+        } else if (matchesSticky) {
+          alpha *= hover !== null ? 0.6 : 1.0;
+        } else {
+          alpha *= hover !== null ? 0.15 : 0.3;
+        }
       }
 
-      if (timeUs < msg.arriveUs) {
+      let x0 = srcPos.x;
+      let y0 = srcPos.y;
+
+      if (msg.loopback) {
         const travelDuration = msg.arriveUs - msg.startUs;
         const travelFrac = Math.min(1, (timeUs - msg.startUs) / (travelDuration || 1));
-        [headX, headY] = this.drawPartialBezierArrow(
-          ctx, x0, y0, cpx, cpy, x1, y1, travelFrac,
-          color, lineWidth, alpha, dashed,
+        [headX, headY] = this.drawLoopArrow(
+          srcPos.x,
+          srcPos.y,
+          color,
+          lineWidth,
+          alpha,
+          dashed,
+          travelFrac,
+          noListenerShardLoopScale(ev),
         );
       } else {
-        this.drawArrow(ctx, x0, y0, x1, y1, color, lineWidth, alpha, dashed);
-        headX = x1;
-        headY = y1;
+        const dstPos = this.nodePositions.get(ev.dst);
+        if (!dstPos) continue;
+
+        const srcBox = this.getBoxSize(ev.src);
+        const dstBox = this.getBoxSize(ev.dst);
+        [x0, y0] = this.edgePoint(srcPos.x, srcPos.y, srcBox.w, srcBox.h, dstPos.x, dstPos.y);
+        const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
+
+        // Bezier control point (slight curve)
+        const mx = (x0 + x1) / 2,
+          my = (y0 + y1) / 2;
+        const dx = x1 - x0,
+          dy = y1 - y0;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        const off = len * 0.08;
+        const nx = -dy / (len || 1),
+          ny = dx / (len || 1);
+        const cpx = mx + nx * off,
+          cpy = my + ny * off;
+
+        if (timeUs < msg.arriveUs) {
+          const travelDuration = msg.arriveUs - msg.startUs;
+          const travelFrac = Math.min(1, (timeUs - msg.startUs) / (travelDuration || 1));
+          [headX, headY] = this.drawPartialBezierArrow(
+            ctx,
+            x0,
+            y0,
+            cpx,
+            cpy,
+            x1,
+            y1,
+            travelFrac,
+            color,
+            lineWidth,
+            alpha,
+            dashed,
+          );
+        } else {
+          this.drawArrow(ctx, x0, y0, x1, y1, color, lineWidth, alpha, dashed);
+          headX = x1;
+          headY = y1;
+        }
       }
 
       // Info box near arrowhead — skip if dimmed
       if (hasFocus && !matchesHover && !matchesSticky) continue;
-      const ldx = headX - x0, ldy = headY - y0;
+      const ldx = headX - x0,
+        ldy = headY - y0;
       const llen = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
-      const lnx = -ldy / llen, lny = ldx / llen;
-      const labelX = headX + lnx * 14, labelY = headY + lny * 14;
+      const lnx = -ldy / llen,
+        lny = ldx / llen;
+      const labelX = headX + lnx * 14,
+        labelY = headY + lny * 14;
 
       const ad = ev.details || {};
       const aName = (ad.name as string) || "?";
-      const aSid = ad.subjectId as number ?? "?";
-      const aEv = ad.evictions as number ?? "?";
-      const aLage = ad.lage as number ?? "?";
-      const aTtl = ad.ttl as number ?? "?";
-      const arrowLines = [
-        `${aName}  S=${aSid}`,
-        `ev=${aEv} lage=${aLage} ttl=${aTtl}`,
-      ];
+      const aSid = (ad.subjectId as number) ?? "?";
+      const aEv = (ad.evictions as number) ?? "?";
+      const aLage = (ad.lage as number) ?? "?";
+      const arrowLines = [`${aName}  S=${aSid}`];
+      if (ev.event === "shard") {
+        const shard = (ad.shardIndex as number) ?? "?";
+        const listeners = Array.isArray(ad.listeners) ? ad.listeners.length : "?";
+        arrowLines.push(`ev=${aEv} lage=${aLage} shard=${shard}`);
+        arrowLines.push(`listeners=${listeners}`);
+      } else {
+        const aTtl = (ad.ttl as number) ?? "?";
+        arrowLines.push(`ev=${aEv} lage=${aLage} ttl=${aTtl}`);
+      }
       this.drawInfoBox(ctx, labelX, labelY - 12, arrowLines, color, alpha);
     }
+  }
+
+  private drawLoopArrow(
+    cx: number,
+    cy: number,
+    color: string,
+    lineWidth: number,
+    alpha: number,
+    dashed: boolean,
+    frac: number,
+    radiusScale = 1,
+  ): [number, number] {
+    const radius = LOOPBACK_RADIUS * Math.max(1, radiusScale);
+    const centerOffset = LOOPBACK_RADIUS * 0.2;
+    const start = -Math.PI * 0.25;
+    const end = start + Math.PI * 1.7 * frac;
+
+    this.ctx.save();
+    this.ctx.globalAlpha = alpha;
+    this.ctx.strokeStyle = color;
+    this.ctx.lineWidth = lineWidth;
+    this.ctx.setLineDash(dashed ? [6, 4] : []);
+    this.ctx.beginPath();
+    this.ctx.arc(cx + centerOffset, cy - centerOffset, radius, start, end);
+    this.ctx.stroke();
+
+    const tx = cx + centerOffset + Math.cos(end) * radius;
+    const ty = cy - centerOffset + Math.sin(end) * radius;
+    const ux = -Math.sin(end);
+    const uy = Math.cos(end);
+    const headLen = 8;
+    this.ctx.setLineDash([]);
+    this.ctx.fillStyle = color;
+    this.ctx.beginPath();
+    this.ctx.moveTo(tx, ty);
+    this.ctx.lineTo(tx - ux * headLen - uy * headLen * 0.4, ty - uy * headLen + ux * headLen * 0.4);
+    this.ctx.lineTo(tx - ux * headLen + uy * headLen * 0.4, ty - uy * headLen - ux * headLen * 0.4);
+    this.ctx.closePath();
+    this.ctx.fill();
+    this.ctx.restore();
+    return [tx, ty];
   }
 
   /** Draw a partial quadratic bezier (0 to frac) with arrowhead at the leading edge.
    *  Uses De Casteljau subdivision to split the curve at parameter frac. */
   private drawPartialBezierArrow(
     ctx: CanvasRenderingContext2D,
-    x0: number, y0: number,
-    cpx: number, cpy: number,
-    x1: number, y1: number,
+    x0: number,
+    y0: number,
+    cpx: number,
+    cpy: number,
+    x1: number,
+    y1: number,
     frac: number,
-    color: string, lineWidth: number, alpha: number, dashed: boolean,
+    color: string,
+    lineWidth: number,
+    alpha: number,
+    dashed: boolean,
   ): [number, number] {
     // De Casteljau split at frac: sub-curve from 0 to frac
     const q0x = x0 + (cpx - x0) * frac;
@@ -456,18 +570,18 @@ export class Renderer {
     ctx.stroke();
 
     // Arrowhead at (bx, by) in tangent direction (q1 - q0)
-    const tdx = q1x - q0x, tdy = q1y - q0y;
+    const tdx = q1x - q0x,
+      tdy = q1y - q0y;
     const tlen = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
-    const ux = tdx / tlen, uy = tdy / tlen;
+    const ux = tdx / tlen,
+      uy = tdy / tlen;
     const headLen = 8;
     ctx.setLineDash([]);
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(bx, by);
-    ctx.lineTo(bx - ux * headLen - uy * headLen * 0.4,
-               by - uy * headLen + ux * headLen * 0.4);
-    ctx.lineTo(bx - ux * headLen + uy * headLen * 0.4,
-               by - uy * headLen - ux * headLen * 0.4);
+    ctx.lineTo(bx - ux * headLen - uy * headLen * 0.4, by - uy * headLen + ux * headLen * 0.4);
+    ctx.lineTo(bx - ux * headLen + uy * headLen * 0.4, by - uy * headLen - ux * headLen * 0.4);
     ctx.closePath();
     ctx.fill();
 
@@ -476,13 +590,12 @@ export class Renderer {
   }
 
   /** Compute intersection of line from box center to target with box border. */
-  private edgePoint(
-    cx: number, cy: number, bw: number, bh: number,
-    tx: number, ty: number,
-  ): [number, number] {
-    const dx = tx - cx, dy = ty - cy;
+  private edgePoint(cx: number, cy: number, bw: number, bh: number, tx: number, ty: number): [number, number] {
+    const dx = tx - cx,
+      dy = ty - cy;
     if (dx === 0 && dy === 0) return [cx, cy];
-    const hw = bw / 2, hh = bh / 2;
+    const hw = bw / 2,
+      hh = bh / 2;
     const sx = dx !== 0 ? hw / Math.abs(dx) : 1e9;
     const sy = dy !== 0 ? hh / Math.abs(dy) : 1e9;
     const s = Math.min(sx, sy);
@@ -491,8 +604,14 @@ export class Renderer {
 
   private drawArrow(
     ctx: CanvasRenderingContext2D,
-    x0: number, y0: number, x1: number, y1: number,
-    color: string, lineWidth: number, alpha: number, dashed: boolean,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    color: string,
+    lineWidth: number,
+    alpha: number,
+    dashed: boolean,
   ): void {
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -501,12 +620,16 @@ export class Renderer {
     ctx.setLineDash(dashed ? [6, 4] : []);
 
     // Quadratic bezier for slight curve
-    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-    const dx = x1 - x0, dy = y1 - y0;
+    const mx = (x0 + x1) / 2,
+      my = (y0 + y1) / 2;
+    const dx = x1 - x0,
+      dy = y1 - y0;
     const len = Math.sqrt(dx * dx + dy * dy);
     const off = len * 0.08;
-    const nx = -dy / (len || 1), ny = dx / (len || 1);
-    const cpx = mx + nx * off, cpy = my + ny * off;
+    const nx = -dy / (len || 1),
+      ny = dx / (len || 1);
+    const cpx = mx + nx * off,
+      cpy = my + ny * off;
 
     ctx.beginPath();
     ctx.moveTo(x0, y0);
@@ -515,17 +638,17 @@ export class Renderer {
 
     // Arrowhead
     const headLen = 8;
-    const tdx = x1 - cpx, tdy = y1 - cpy;
+    const tdx = x1 - cpx,
+      tdy = y1 - cpy;
     const tlen = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
-    const ux = tdx / tlen, uy = tdy / tlen;
+    const ux = tdx / tlen,
+      uy = tdy / tlen;
     ctx.setLineDash([]);
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
-    ctx.lineTo(x1 - ux * headLen - uy * headLen * 0.4,
-               y1 - uy * headLen + ux * headLen * 0.4);
-    ctx.lineTo(x1 - ux * headLen + uy * headLen * 0.4,
-               y1 - uy * headLen - ux * headLen * 0.4);
+    ctx.lineTo(x1 - ux * headLen - uy * headLen * 0.4, y1 - uy * headLen + ux * headLen * 0.4);
+    ctx.lineTo(x1 - ux * headLen + uy * headLen * 0.4, y1 - uy * headLen - ux * headLen * 0.4);
     ctx.closePath();
     ctx.fill();
 
@@ -548,7 +671,8 @@ export class Renderer {
 
     // Convert screen coords to world coords for hit-testing
     const world = this.viewport.screenToWorld(mx, my);
-    const wx = world.x, wy = world.y;
+    const wx = world.x,
+      wy = world.y;
 
     // Hit-test arrows (highest priority — small targets)
     const arrow = this.hitTestArrow(wx, wy);
@@ -573,6 +697,15 @@ export class Renderer {
       const ev = msg.event;
       const srcPos = this.nodePositions.get(ev.src);
       if (!srcPos || ev.dst === null) continue;
+      if (msg.loopback) {
+        const radius = LOOPBACK_RADIUS * noListenerShardLoopScale(ev);
+        const centerOffset = LOOPBACK_RADIUS * 0.2;
+        const cx = srcPos.x + centerOffset;
+        const cy = srcPos.y - centerOffset;
+        const dist = Math.abs(Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2) - radius);
+        if (dist < threshold) return msg;
+        continue;
+      }
       const dstPos = this.nodePositions.get(ev.dst);
       if (!dstPos) continue;
 
@@ -582,12 +715,16 @@ export class Renderer {
       const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
 
       // Sample the bezier curve and check distance
-      const midX = (x0 + x1) / 2, midY = (y0 + y1) / 2;
-      const dx = x1 - x0, dy = y1 - y0;
+      const midX = (x0 + x1) / 2,
+        midY = (y0 + y1) / 2;
+      const dx = x1 - x0,
+        dy = y1 - y0;
       const len = Math.sqrt(dx * dx + dy * dy);
       const off = len * 0.08;
-      const nx = -dy / (len || 1), ny = dx / (len || 1);
-      const cpx = midX + nx * off, cpy = midY + ny * off;
+      const nx = -dy / (len || 1),
+        ny = dx / (len || 1);
+      const cpx = midX + nx * off,
+        cpy = midY + ny * off;
 
       if (this.distToBezier(mx, my, x0, y0, cpx, cpy, x1, y1) < threshold) {
         return msg;
@@ -612,8 +749,14 @@ export class Renderer {
   }
 
   private distToBezier(
-    px: number, py: number,
-    x0: number, y0: number, cpx: number, cpy: number, x1: number, y1: number,
+    px: number,
+    py: number,
+    x0: number,
+    y0: number,
+    cpx: number,
+    cpy: number,
+    x1: number,
+    y1: number,
   ): number {
     // Sample 16 points along the quadratic bezier, find min distance
     let minDist = Infinity;
@@ -633,12 +776,20 @@ export class Renderer {
     const ev = msg.event;
     const d = ev.details || {};
     const type =
-      ev.event === "unicast" ? "Unicast" :
-      (ev.event === "periodic_unicast" ? "Periodic Unicast" : "Forward");
+      ev.event === "shard"
+        ? "Shard Gossip"
+        : ev.event === "unicast"
+          ? "Unicast"
+          : ev.event === "periodic_unicast"
+            ? "Periodic Unicast"
+            : "Forward";
     const delayMs = ((d.delayUs as number) || 0) / 1000;
-    const lines = [`${type}  Node${ev.src} → Node${ev.dst}`];
+    const head = msg.loopback ? `${type}  Node${ev.src} ↺` : `${type}  Node${ev.src} → Node${ev.dst}`;
+    const lines = [head];
     if (d.name) lines.push(`Topic: ${d.name}`);
     if (d.subjectId !== undefined) lines.push(`Subject: ${d.subjectId}`);
+    if (d.shardIndex !== undefined) lines.push(`Shard: ${d.shardIndex}`);
+    if (Array.isArray(d.listeners)) lines.push(`Listeners: ${d.listeners.length}`);
     if (d.evictions !== undefined) lines.push(`Evictions: ${d.evictions}`);
     if (d.lage !== undefined) lines.push(`Lage: ${d.lage}`);
     if (d.ttl !== undefined) lines.push(`TTL: ${d.ttl}`);

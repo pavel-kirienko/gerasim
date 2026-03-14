@@ -2,13 +2,20 @@ import { describe, it, expect } from "vitest";
 import { EventLog, mapCode } from "../../src/event-log.js";
 import type { EventRecord } from "../../src/types.js";
 
-function rec(event: string, src = 0, dst: number | null = null, topicHash = 0n, details: Record<string, unknown> = {}): EventRecord {
+function rec(
+  event: string,
+  src = 0,
+  dst: number | null = null,
+  topicHash = 0n,
+  details: Record<string, unknown> = {},
+): EventRecord {
   return { timeUs: 1000, event, src, dst, topicHash, details };
 }
 
 describe("mapCode", () => {
   it("maps all event types correctly", () => {
     expect(mapCode(rec("broadcast"))).toBe("GB");
+    expect(mapCode(rec("shard"))).toBe("GS");
     expect(mapCode(rec("unicast"))).toBe("GU");
     expect(mapCode(rec("periodic_unicast"))).toBe("GP");
     expect(mapCode(rec("forward"))).toBe("GF");
@@ -49,10 +56,19 @@ describe("EventLog.ingest", () => {
   it("correlates send and receive events", () => {
     const log = new EventLog();
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 42n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([sendRec, recvRec], 0);
@@ -65,10 +81,19 @@ describe("EventLog.ingest", () => {
   it("correlates periodic send and receive events", () => {
     const log = new EventLog();
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "periodic_unicast", src: 0, dst: 2, topicHash: 77n, details: {},
+      timeUs: 1000,
+      event: "periodic_unicast",
+      src: 0,
+      dst: 2,
+      topicHash: 77n,
+      details: {},
     };
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 2, dst: 0, topicHash: 77n,
+      timeUs: 2000,
+      event: "received",
+      src: 2,
+      dst: 0,
+      topicHash: 77n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([sendRec, recvRec], 0);
@@ -79,17 +104,56 @@ describe("EventLog.ingest", () => {
     expect(sendEv.receiveIds).toContain(recvEv.id);
   });
 
+  it("correlates shard send and receive events", () => {
+    const log = new EventLog();
+    const sendRec: EventRecord = {
+      timeUs: 1000,
+      event: "shard",
+      src: 0,
+      dst: null,
+      topicHash: 88n,
+      details: { shardIndex: 5 },
+    };
+    const recvRec: EventRecord = {
+      timeUs: 2000,
+      event: "received",
+      src: 2,
+      dst: 0,
+      topicHash: 88n,
+      details: { originSrc: 0, sendTimeUs: 1000 },
+    };
+    log.ingest([sendRec, recvRec], 0);
+    const sendEv = log.events[0];
+    const recvEv = log.events[1];
+    expect(sendEv.code).toBe("GS");
+    expect(recvEv.sendId).toBe(sendEv.id);
+    expect(sendEv.receiveIds).toContain(recvEv.id);
+  });
+
   it("multiple receives correlate to one send", () => {
     const log = new EventLog();
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     const recv1: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 42n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     const recv2: EventRecord = {
-      timeUs: 2500, event: "received", src: 2, dst: 0, topicHash: 42n,
+      timeUs: 2500,
+      event: "received",
+      src: 2,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([sendRec, recv1, recv2], 0);
@@ -99,10 +163,19 @@ describe("EventLog.ingest", () => {
   it("no correlation for non-matching keys", () => {
     const log = new EventLog();
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 99n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 99n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([sendRec, recvRec], 0);
@@ -118,7 +191,7 @@ describe("EventLog.truncateAfter", () => {
     expect(log.events.length).toBe(4);
     log.truncateAfter(0);
     expect(log.events.length).toBe(2);
-    expect(log.events.every(e => e.historyIndex <= 0)).toBe(true);
+    expect(log.events.every((e) => e.historyIndex <= 0)).toBe(true);
   });
 
   it("resets nextId correctly", () => {
@@ -134,11 +207,20 @@ describe("EventLog.truncateAfter", () => {
   it("cleans sendId references on truncated receives", () => {
     const log = new EventLog();
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     log.ingest([sendRec], 0);
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 42n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([recvRec], 1);
@@ -164,7 +246,14 @@ describe("EventLog.clear", () => {
 // Helpers for adversarial byId tests
 // ---------------------------------------------------------------------------
 
-function recAt(event: string, timeUs: number, src = 0, dst: number | null = null, topicHash = 0n, details: Record<string, unknown> = {}): EventRecord {
+function recAt(
+  event: string,
+  timeUs: number,
+  src = 0,
+  dst: number | null = null,
+  topicHash = 0n,
+  details: Record<string, unknown> = {},
+): EventRecord {
   return { timeUs, event, src, dst, topicHash, details };
 }
 
@@ -174,8 +263,8 @@ function assertByIdSync(log: EventLog): void {
     expect(log.getById(e.id)).toBe(e); // referential identity
   }
   // No extra entries: check IDs 0..maxId+5
-  const maxId = log.events.length > 0 ? Math.max(...log.events.map(e => e.id)) : -1;
-  const validIds = new Set(log.events.map(e => e.id));
+  const maxId = log.events.length > 0 ? Math.max(...log.events.map((e) => e.id)) : -1;
+  const validIds = new Set(log.events.map((e) => e.id));
   for (let i = 0; i <= maxId + 5; i++) {
     if (!validIds.has(i)) expect(log.getById(i)).toBeUndefined();
   }
@@ -280,7 +369,7 @@ describe("EventLog.byId after clear", () => {
   it("clear removes all ghost references", () => {
     const log = new EventLog();
     log.ingest([rec("join"), rec("broadcast"), rec("forward")], 0);
-    const ids = log.events.map(e => e.id);
+    const ids = log.events.map((e) => e.id);
     log.clear();
     for (const id of ids) {
       expect(log.getById(id)).toBeUndefined();
@@ -306,9 +395,9 @@ describe("EventLog.byId with ID reuse", () => {
 
   it("partial truncation + re-ingest: new events at recycled IDs", () => {
     const log = new EventLog();
-    log.ingest([rec("join"), rec("broadcast")], 0);     // ids 0, 1
-    log.ingest([rec("forward"), rec("unicast")], 1);    // ids 2, 3
-    log.truncateAfter(0);                                // removes ids 2, 3
+    log.ingest([rec("join"), rec("broadcast")], 0); // ids 0, 1
+    log.ingest([rec("forward"), rec("unicast")], 1); // ids 2, 3
+    log.truncateAfter(0); // removes ids 2, 3
     log.ingest([rec("topic_new"), rec("resolved")], 1); // new ids 2, 3
     expect(log.getById(2)!.code).toBe("TN");
     expect(log.getById(3)!.code).toBe("CR");
@@ -343,7 +432,10 @@ describe("EventLog.byId across multiple truncation cycles", () => {
       if (round > 0) {
         log.truncateAfter(round - 1);
         // Re-ingest for the current round after truncation
-        log.ingest(Array.from({ length: 5 }, () => rec("broadcast")), round);
+        log.ingest(
+          Array.from({ length: 5 }, () => rec("broadcast")),
+          round,
+        );
       }
       assertByIdSync(log);
     }
@@ -359,10 +451,19 @@ describe("EventLog correlation via byId after truncation", () => {
     const log = new EventLog();
     // Send at historyIndex 0, receive at historyIndex 1
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 42n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([sendRec], 0);
@@ -379,14 +480,23 @@ describe("EventLog correlation via byId after truncation", () => {
   it("send survives truncation, new receive correlates", () => {
     const log = new EventLog();
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     log.ingest([sendRec], 0);
     log.ingest([rec("join")], 1); // unrelated at historyIndex 1
     log.truncateAfter(0); // removes the unrelated event
     // Now ingest receive at historyIndex 1
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 42n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([recvRec], 1);
@@ -398,11 +508,20 @@ describe("EventLog correlation via byId after truncation", () => {
   it("cross-batch correlation: byId reference is same object", () => {
     const log = new EventLog();
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     log.ingest([sendRec], 0);
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 42n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([recvRec], 1);
@@ -419,13 +538,22 @@ describe("EventLog correlation via byId after truncation", () => {
     const log = new EventLog();
     log.ingest([rec("join")], 0); // id 0 at historyIndex 0
     const sendRec: EventRecord = {
-      timeUs: 1000, event: "broadcast", src: 0, dst: null, topicHash: 42n, details: {},
+      timeUs: 1000,
+      event: "broadcast",
+      src: 0,
+      dst: null,
+      topicHash: 42n,
+      details: {},
     };
     log.ingest([sendRec], 1); // id 1 at historyIndex 1
     log.truncateAfter(0); // removes send (id 1) and its pendingSends key
     // Ingest receive referencing the same key — should NOT correlate
     const recvRec: EventRecord = {
-      timeUs: 2000, event: "received", src: 1, dst: 0, topicHash: 42n,
+      timeUs: 2000,
+      event: "received",
+      src: 1,
+      dst: 0,
+      topicHash: 42n,
       details: { originSrc: 0, sendTimeUs: 1000 },
     };
     log.ingest([recvRec], 1);

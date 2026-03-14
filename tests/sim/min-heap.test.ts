@@ -53,8 +53,7 @@ describe("MinHeap", () => {
     while (h.length > 0) {
       const cur = h.pop()!;
       if (prev) {
-        const ok = cur.timeUs > prev.timeUs ||
-          (cur.timeUs === prev.timeUs && cur.seq > prev.seq);
+        const ok = cur.timeUs > prev.timeUs || (cur.timeUs === prev.timeUs && cur.seq > prev.seq);
         expect(ok).toBe(true);
       }
       prev = cur;

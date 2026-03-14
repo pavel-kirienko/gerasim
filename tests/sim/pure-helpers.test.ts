@@ -1,10 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  topicHash, subjectId, leftWins, gossipDedupHash, topicLage,
-} from "../../src/sim.js";
-import {
-  SUBJECT_ID_PINNED_MAX, SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX,
-} from "../../src/constants.js";
+import { topicHash, subjectId, leftWins, gossipDedupHash, topicLage } from "../../src/sim.js";
+import { SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX } from "../../src/constants.js";
 
 describe("topicHash", () => {
   it("empty string is deterministic", () => {
@@ -26,18 +22,18 @@ describe("topicHash", () => {
 });
 
 describe("subjectId", () => {
-  it("pinned range: hash <= 0x1FFF returns Number(hash)", () => {
+  it("uses modular arithmetic for hash with zero evictions", () => {
     expect(subjectId(0n, 0, SUBJECT_ID_MODULUS)).toBe(0);
     expect(subjectId(100n, 0, SUBJECT_ID_MODULUS)).toBe(100);
-    expect(subjectId(BigInt(SUBJECT_ID_PINNED_MAX), 0, SUBJECT_ID_MODULUS)).toBe(SUBJECT_ID_PINNED_MAX);
+    expect(subjectId(0xffff_ffff_ffff_ffffn, 0, SUBJECT_ID_MODULUS)).toBe(
+      Number(0xffff_ffff_ffff_ffffn % BigInt(SUBJECT_ID_MODULUS)),
+    );
   });
 
-  it("non-pinned: modular arithmetic", () => {
+  it("matches the model formula hash + evictions^2 modulo modulus", () => {
     const hash = topicHash("topic/a");
     const sid = subjectId(hash, 0, SUBJECT_ID_MODULUS);
-    expect(sid).toBeGreaterThanOrEqual(SUBJECT_ID_PINNED_MAX + 1);
-    // Verify formula
-    const expected = SUBJECT_ID_PINNED_MAX + 1 + Number(hash % BigInt(SUBJECT_ID_MODULUS));
+    const expected = Number(hash % BigInt(SUBJECT_ID_MODULUS));
     expect(sid).toBe(expected);
   });
 

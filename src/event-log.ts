@@ -6,23 +6,38 @@ import { EventRecord, TimelineCode, TimelineEvent } from "./types.js";
 
 export function mapCode(rec: EventRecord): TimelineCode {
   switch (rec.event) {
-    case "broadcast": return "GB";
-    case "unicast":   return "GU";
-    case "periodic_unicast": return "GP";
-    case "forward":   return "GF";
-    case "received":  return "GR";
-    case "gossip_xterminated": return "GX";
-    case "join":      return "NN";
-    case "topic_new": return "TN";
-    case "topic_expunged": return "TX";
-    case "node_expunged":  return "NX";
-    case "resolved":  return "CR";
-    case "peer_refresh": return "PR";
+    case "broadcast":
+      return "GB";
+    case "shard":
+      return "GS";
+    case "unicast":
+      return "GU";
+    case "periodic_unicast":
+      return "GP";
+    case "forward":
+      return "GF";
+    case "received":
+      return "GR";
+    case "gossip_xterminated":
+      return "GX";
+    case "join":
+      return "NN";
+    case "topic_new":
+      return "TN";
+    case "topic_expunged":
+      return "TX";
+    case "node_expunged":
+      return "NX";
+    case "resolved":
+      return "CR";
+    case "peer_refresh":
+      return "PR";
     case "conflict": {
       const t = rec.details?.type as string;
       return t === "collision" ? "TC" : "TD";
     }
-    default: return "GB"; // fallback
+    default:
+      return "GB"; // fallback
   }
 }
 
@@ -63,7 +78,7 @@ export class EventLog {
       this.byId.set(te.id, te);
 
       // Correlation for send/receive
-      if (code === "GB" || code === "GU" || code === "GP" || code === "GF") {
+      if (code === "GB" || code === "GS" || code === "GU" || code === "GP" || code === "GF") {
         const key = `${rec.src}:${rec.topicHash}:${rec.timeUs}`;
         this.pendingSends.set(key, te.id);
       } else if (code === "GR") {
@@ -85,7 +100,7 @@ export class EventLog {
   truncateAfter(historyIndex: number): void {
     // Remove events with historyIndex > index
     const removedIds = new Set<number>();
-    this.events = this.events.filter(e => {
+    this.events = this.events.filter((e) => {
       if (e.historyIndex > historyIndex) {
         removedIds.add(e.id);
         this.byId.delete(e.id);
@@ -101,7 +116,7 @@ export class EventLog {
     if (removedIds.size > 0) {
       for (const e of this.events) {
         if (e.receiveIds.length > 0) {
-          e.receiveIds = e.receiveIds.filter(id => !removedIds.has(id));
+          e.receiveIds = e.receiveIds.filter((id) => !removedIds.has(id));
         }
         if (e.sendId !== null && removedIds.has(e.sendId)) {
           e.sendId = null;

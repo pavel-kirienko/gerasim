@@ -1,6 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
+
 - `src/` contains the TypeScript simulator and browser UI.
 - `tests/` contains test suites, organized by domain.
 - `static/` stores site assets; `index.html` is the entry page.
@@ -8,6 +9,7 @@
 - `submodules/cy/` is the upstream protocol reference implementation tracked as a Git submodule; treat it as external unless intentionally updating the pointer.
 
 ## Build, Test, and Development Commands
+
 - `npm ci`: install exact locked dependencies.
 - `bash build.sh`: run strict type-check (`tsc --noEmit`) and bundle with esbuild.
 - `npm test`: run all tests once with Vitest.
@@ -16,6 +18,7 @@
 - `python3 -m http.server 8080`: serve the built site locally, then open `http://localhost:8080`.
 
 ## Coding Style & Naming Conventions
+
 - Language: strict TypeScript targeting ES2020.
 - Formatting in this repo uses 2-space indentation, semicolons, and double quotes.
 - Keep import specifiers with `.js` extensions in TS files (consistent with current bundler setup).
@@ -23,9 +26,11 @@
 - Prefer small, testable functions in simulation logic; keep browser bootstrapping side effects in `src/main.ts`.
 
 ## Testing Guidelines
+
 - Framework: Vitest (`vitest.config.ts` uses Node environment and globals).
 - Test files must match `tests/**/*.test.ts`.
 - Place tests near their domain (simulation, event log, helpers) and keep deterministic seeds where randomness is involved.
 
 ## Commit & Pull Request Guidelines
+
 - PRs should include: what changed, why, test evidence (`npm test`, `bash build.sh`), and screenshots for UI updates.

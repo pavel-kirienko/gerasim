@@ -2,8 +2,7 @@
 // NodeBlock — HTML DOM node block with tables and interactive controls
 // ---------------------------------------------------------------------------
 
-import { NodeSnapshot, TopicSnap, PeerSnap } from "./types.js";
-import { GOSSIP_PEER_ELIGIBLE } from "./constants.js";
+import { NodeSnapshot, TopicSnap } from "./types.js";
 
 const BOX_WIDTH = 320;
 
@@ -29,13 +28,12 @@ export class NodeBlock {
   private partBtn: HTMLButtonElement;
   private statusSection: HTMLElement;
   private topicsBody: HTMLTableSectionElement;
-  private peersBody: HTMLTableSectionElement;
+  private shardsSection: HTMLElement;
   private topicsContainer: HTMLElement;
 
   private statusCacheKey = "";
   private topicCacheKey = "";
-  private peerCacheKey = "";
-  private peerCells: [HTMLElement, HTMLElement][] = [];
+  private shardCacheKey = "";
   onHover: ((nodeId: number | null) => void) | null = null;
 
   constructor(nodeId: number, callbacks: NodeBlockCallbacks) {
@@ -88,13 +86,13 @@ export class NodeBlock {
     topicTable.append(topicThead, this.topicsBody);
     this.topicsContainer.appendChild(topicTable);
 
-    // Peers section
+    // Shard listeners section
     const peersContainer = document.createElement("div");
     peersContainer.className = "nb-peers";
-    const peerTable = document.createElement("table");
-    this.peersBody = document.createElement("tbody");
-    peerTable.appendChild(this.peersBody);
-    peersContainer.appendChild(peerTable);
+    this.shardsSection = document.createElement("div");
+    this.shardsSection.style.fontSize = "9px";
+    this.shardsSection.style.padding = "2px 0";
+    peersContainer.appendChild(this.shardsSection);
 
     // Resize handle
     const resizeHandle = document.createElement("div");
@@ -104,7 +102,7 @@ export class NodeBlock {
     this.el.append(this.headerEl, this.statusSection, this.topicsContainer, peersContainer, resizeHandle);
   }
 
-  update(snap: NodeSnapshot, timeUs: number, isConflict: boolean, peerFlashIndices?: Set<number>, rxRate?: number): void {
+  update(snap: NodeSnapshot, timeUs: number, isConflict: boolean, rxRate?: number): void {
     // Status label
     const status = snap.online ? "ONLINE" : "OFFLINE";
     this.statusLabel.textContent = status;
@@ -127,29 +125,32 @@ export class NodeBlock {
     }
 
     // Status lines — compact 2-column grid
-    const bcast = snap.online && snap.nextBroadcastUs > 0
-      ? Math.max(0, snap.nextBroadcastUs - timeUs) / 1_000_000 : -1;
+    const bcast = snap.online && snap.nextGossipUs > 0 ? Math.max(0, snap.nextGossipUs - timeUs) / 1_000_000 : -1;
     const bcastStr = bcast >= 0 ? `${bcast.toFixed(2)}s` : "--";
 
     let nextTopicName = "--";
-    const nxtH = snap.gossipUrgentFront ?? snap.gossipQueueFront;
-    if (snap.online && nxtH !== null) {
+    if (snap.online && snap.nextTopicHash !== null) {
       for (const ts of snap.topics) {
-        if (ts.hash === nxtH) { nextTopicName = ts.name; break; }
+        if (ts.hash === snap.nextTopicHash) {
+          nextTopicName = ts.name;
+          break;
+        }
       }
     }
 
-    const urgentStr = snap.online && snap.lastUrgentUs > 0
-      ? `${((timeUs - snap.lastUrgentUs) / 1_000_000).toFixed(2)}s ago` : "--";
+    const urgentStr =
+      snap.online && snap.lastUrgentUs > 0 ? `${((timeUs - snap.lastUrgentUs) / 1_000_000).toFixed(2)}s ago` : "--";
 
     const rxStr = snap.online && rxRate !== undefined ? `${rxRate.toFixed(1)} msg/s` : "--";
 
-    let html = '<div class="nb-status-grid">'
-      + `<span class="nb-sl">bcast in</span><span>${bcastStr}</span>`
-      + `<span class="nb-sl">next gossip</span><span>${nextTopicName}</span>`
-      + `<span class="nb-sl">last urgent</span><span>${urgentStr}</span>`
-      + `<span class="nb-sl">arrival avg</span><span>${rxStr}</span>`
-      + "</div>";
+    let html =
+      '<div class="nb-status-grid">' +
+      `<span class="nb-sl">gossip in</span><span>${bcastStr}</span>` +
+      `<span class="nb-sl">next gossip</span><span>${nextTopicName}</span>` +
+      `<span class="nb-sl">last urgent</span><span>${urgentStr}</span>` +
+      `<span class="nb-sl">urgent pend</span><span>${snap.pendingUrgentCount}</span>` +
+      `<span class="nb-sl">arrival avg</span><span>${rxStr}</span>` +
+      "</div>";
 
     if (html !== this.statusCacheKey) {
       this.statusCacheKey = html;
@@ -157,24 +158,16 @@ export class NodeBlock {
     }
 
     // Topics table
-    const topicKey = snap.topics.map(t => `${t.hash.toString(36)}:${t.evictions}:${t.lage}:${t.subjectId}`).join(",");
+    const topicKey = snap.topics.map((t) => `${t.hash.toString(36)}:${t.evictions}:${t.lage}:${t.subjectId}`).join(",");
     if (topicKey !== this.topicCacheKey) {
       this.topicCacheKey = topicKey;
       this.rebuildTopics(snap.topics);
     }
 
-    // Peers
-    const peerKey = snap.peers.map(p => p ? `${p.nodeId}:${p.lastSeenUs}` : "-").join(",");
-    if (peerKey !== this.peerCacheKey) {
-      this.peerCacheKey = peerKey;
-      this.rebuildPeers(snap.peers, timeUs);
-    }
-
-    // Apply/clear peer flash
-    for (let i = 0; i < this.peerCells.length; i++) {
-      const bg = peerFlashIndices?.has(i) ? "#ff00ff" : "";
-      this.peerCells[i][0].style.background = bg;
-      this.peerCells[i][1].style.background = bg;
+    const shardKey = snap.shardIds.join(",");
+    if (shardKey !== this.shardCacheKey) {
+      this.shardCacheKey = shardKey;
+      this.rebuildShards(snap.shardIds);
     }
   }
 
@@ -198,8 +191,8 @@ export class NodeBlock {
   }
 
   setPosition(cx: number, cy: number): void {
-    this.el.style.left = (cx - BOX_WIDTH / 2) + "px";
-    this.el.style.top = (cy - this.el.offsetHeight / 2) + "px";
+    this.el.style.left = cx - BOX_WIDTH / 2 + "px";
+    this.el.style.top = cy - this.el.offsetHeight / 2 + "px";
   }
 
   getSize(): { w: number; h: number } {
@@ -258,35 +251,23 @@ export class NodeBlock {
     }
   }
 
-  private rebuildPeers(peers: (PeerSnap | null)[], timeUs: number): void {
-    this.peersBody.innerHTML = "";
-    this.peerCells = [];
-    const row1 = document.createElement("tr");
-    const row2 = document.createElement("tr");
-    for (const p of peers) {
-      const td1 = document.createElement("td");
-      const td2 = document.createElement("td");
-      this.peerCells.push([td1, td2]);
-      if (p) {
-        td1.textContent = `Node${p.nodeId}`;
-        const age = (timeUs - p.lastSeenUs) / 1_000_000;
-        td2.textContent = `${age.toFixed(1)}s`;
-        const fresh = (timeUs - p.lastSeenUs) < GOSSIP_PEER_ELIGIBLE;
-        td2.style.color = fresh ? "#27ae60" : "#95a5a6";
-      } else {
-        td1.textContent = "\u2014";
-        td1.style.color = "#555";
-        td2.textContent = "";
-      }
-      row1.appendChild(td1);
-      row2.appendChild(td2);
+  private rebuildShards(shardIds: number[]): void {
+    if (shardIds.length === 0) {
+      this.shardsSection.innerHTML =
+        '<div style="color:#666;text-align:center;padding:3px 0">(no shard listeners)</div>';
+      return;
     }
-    this.peersBody.append(row1, row2);
+    const preview = shardIds.slice(0, 12).join(", ");
+    const suffix = shardIds.length > 12 ? ", ..." : "";
+    this.shardsSection.innerHTML =
+      `<div style=\"padding:2px 4px;color:#bbb\">listeners: ${shardIds.length}</div>` +
+      `<div style=\"padding:0 4px 3px 4px;color:#fff\">${preview}${suffix}</div>`;
   }
 
   private setupDrag(): void {
     let dragging = false;
-    let lastX = 0, lastY = 0;
+    let lastX = 0,
+      lastY = 0;
 
     this.headerEl.addEventListener("mousedown", (e) => {
       if ((e.target as HTMLElement).tagName === "BUTTON") return;
@@ -335,7 +316,9 @@ export class NodeBlock {
       this.topicsContainer.style.maxHeight = newH + "px";
     });
 
-    document.addEventListener("mouseup", () => { resizing = false; });
+    document.addEventListener("mouseup", () => {
+      resizing = false;
+    });
   }
 
   private mkBtn(label: string, className: string): HTMLButtonElement {

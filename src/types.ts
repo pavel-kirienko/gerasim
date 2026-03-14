@@ -2,10 +2,20 @@
 // Type definitions — port of Python dataclasses to TypeScript interfaces
 // ---------------------------------------------------------------------------
 
+export interface ProtocolConfig {
+  subjectIdModulus: number;
+  shardCount: number;
+  gossipStartupDelay: number;
+  gossipPeriod: number;
+  gossipDither: number;
+  gossipBroadcastFraction: number;
+  gossipUrgentDelay: number;
+}
+
 export interface NetworkConfig {
-  delayUs: [number, number]; // [min, max]
+  delay: [number, number]; // [min, max], seconds
   lossProbability: number;
-  periodicUnicastEnabled: boolean;
+  protocol: ProtocolConfig;
 }
 
 export interface Topic {
@@ -16,31 +26,25 @@ export interface Topic {
   sortOrder: number;
 }
 
-export interface GossipPeer {
-  nodeId: number;
-  lastSeenUs: number;
+export interface TopicScheduleState {
+  nextGossipUs: number;
+  periodicEmissions: number;
+  firstPeriodicBroadcastPending: boolean;
 }
 
-export interface DedupEntry {
-  hash: bigint;
-  lastSeenUs: number;
+export interface PendingUrgentGossip {
+  deadlineUs: number;
+  scope: "shard" | "broadcast";
 }
 
 export interface Node {
   nodeId: number;
   online: boolean;
   topics: Map<bigint, Topic>;
-  // list head is index 0, list tail is the last element
-  gossipQueue: bigint[];
-  gossipUrgent: bigint[];
-  peers: (GossipPeer | null)[];
-  dedup: DedupEntry[];
-  gossipNextUs: number;
-  gossipPeriodicNextUs: number;
+  topicScheduleByHash: Map<bigint, TopicScheduleState>;
+  pendingUrgentByHash: Map<bigint, PendingUrgentGossip>;
   gossipPollScheduledUs: number;
-  gossipPeriodUs: number;
   partitionSet: "A" | "B";
-  peerReplacementMoratoriumUntil: number;
   lastUrgentUs: number;
 }
 
@@ -65,19 +69,14 @@ export interface TopicSnap {
   sortOrder: number;
 }
 
-export interface PeerSnap {
-  nodeId: number;
-  lastSeenUs: number;
-}
-
 export interface NodeSnapshot {
   nodeId: number;
   online: boolean;
   topics: TopicSnap[];
-  peers: (PeerSnap | null)[];
-  gossipQueueFront: bigint | null;
-  gossipUrgentFront: bigint | null;
-  nextBroadcastUs: number;
+  shardIds: number[];
+  nextTopicHash: bigint | null;
+  nextGossipUs: number;
+  pendingUrgentCount: number;
   lastUrgentUs: number;
   partitionSet: "A" | "B";
 }
@@ -86,7 +85,22 @@ export interface NodeSnapshot {
 // Timeline types
 // ---------------------------------------------------------------------------
 
-export type TimelineCode = "GB"|"GU"|"GP"|"GF"|"GR"|"GX"|"TN"|"TC"|"TD"|"TX"|"NN"|"NX"|"CR"|"PR";
+export type TimelineCode =
+  | "GB"
+  | "GS"
+  | "GU"
+  | "GP"
+  | "GF"
+  | "GR"
+  | "GX"
+  | "TN"
+  | "TC"
+  | "TD"
+  | "TX"
+  | "NN"
+  | "NX"
+  | "CR"
+  | "PR";
 
 export interface TimelineEvent {
   id: number;
@@ -96,7 +110,7 @@ export interface TimelineEvent {
   topicHash: bigint;
   details: Record<string, unknown>;
   secondaryTopicHash: bigint | null; // for TC events: the remote topic hash
-  receiveIds: number[];      // for send events: linked receive event IDs
-  sendId: number | null;     // for GR events: the originating send event ID
+  receiveIds: number[]; // for send events: linked receive event IDs
+  sendId: number | null; // for GR events: the originating send event ID
   historyIndex: number;
 }

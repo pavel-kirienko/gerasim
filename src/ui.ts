@@ -4,7 +4,7 @@
 
 import { NodeSnapshot, TopicSnap } from "./types.js";
 import { Simulation, topicHash, subjectId, topicLage } from "./sim.js";
-import { SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX } from "./constants.js";
+import { LAGE_MIN, LAGE_MAX } from "./constants.js";
 import { Renderer } from "./render.js";
 import { Viewport } from "./viewport.js";
 import { NodeBlock, NodeBlockCallbacks } from "./node-block.js";
@@ -13,13 +13,9 @@ import { EventLog } from "./event-log.js";
 
 // Colors for legend
 const C_BROADCAST = "#f1c40f";
-const C_UNICAST   = "#e67e22";
-const C_PERIODIC  = "#1abc9c";
-const C_FORWARD   = "#9b59b6";
-const C_PEER_FRESH = "#27ae60";
-const C_PEER_STALE = "#95a5a6";
+const C_SHARD = "#4dc3ff";
 const C_CONVERGED = "#27ae60";
-const C_DIVERGED  = "#c0392b";
+const C_DIVERGED = "#c0392b";
 
 /** JSON.stringify with leaf containers (no nested arrays/objects) on a single line. */
 function compactJSON(obj: any, indent = 2): string {
@@ -37,13 +33,15 @@ function compactJSON(obj: any, indent = 2): string {
     const inner = " ".repeat((depth + 1) * indent);
     if (Array.isArray(v)) {
       if (v.length === 0) return "[]";
-      if (isLeaf(v)) return "[ " + v.map(e => fmt(e, 0)).join(", ") + " ]";
-      return "[\n" + v.map(e => inner + fmt(e, depth + 1)).join(",\n") + "\n" + pad + "]";
+      if (isLeaf(v)) return "[ " + v.map((e) => fmt(e, 0)).join(", ") + " ]";
+      return "[\n" + v.map((e) => inner + fmt(e, depth + 1)).join(",\n") + "\n" + pad + "]";
     }
     const keys = Object.keys(v);
     if (keys.length === 0) return "{}";
-    if (isLeaf(v)) return "{ " + keys.map(k => JSON.stringify(k) + ": " + fmt(v[k], 0)).join(", ") + " }";
-    return "{\n" + keys.map(k => inner + JSON.stringify(k) + ": " + fmt(v[k], depth + 1)).join(",\n") + "\n" + pad + "}";
+    if (isLeaf(v)) return "{ " + keys.map((k) => JSON.stringify(k) + ": " + fmt(v[k], 0)).join(", ") + " }";
+    return (
+      "{\n" + keys.map((k) => inner + JSON.stringify(k) + ": " + fmt(v[k], depth + 1)).join(",\n") + "\n" + pad + "}"
+    );
   }
   return fmt(obj, 0);
 }
@@ -53,21 +51,22 @@ function genTopicName(index: number): string {
   return index < 26 ? "topic/" + letter : "topic/" + letter + Math.floor(index / 26);
 }
 
-function findCollidingPair(targetSid: number): [string, string] {
+function findCollidingPair(targetSid: number, modulus: number): [string, string] {
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
   const names: string[] = [];
   for (let attempt = 0; names.length < 2 && attempt < 100000; attempt++) {
     let name = "";
-    for (let i = 0; i < 4; i++) name += alphabet[Math.random() * alphabet.length | 0];
+    for (let i = 0; i < 4; i++) name += alphabet[(Math.random() * alphabet.length) | 0];
     const hash = topicHash(name);
-    if (subjectId(hash, 0, SUBJECT_ID_MODULUS) === targetSid) {
+    if (subjectId(hash, 0, modulus) === targetSid) {
       if (names.length === 0 || name !== names[0]) names.push(name);
     }
   }
   return [names[0] ?? "collide_a", names[1] ?? "collide_b"];
 }
 
-const EDITOR_TEXT_CSS = "margin:0;padding:6px;font:11px/1.3 'Ubuntu Mono',monospace;white-space:pre;tab-size:2;letter-spacing:normal;word-spacing:normal;text-rendering:auto";
+const EDITOR_TEXT_CSS =
+  "margin:0;padding:6px;font:11px/1.3 'Ubuntu Mono',monospace;white-space:pre;tab-size:2;letter-spacing:normal;word-spacing:normal;text-rendering:auto";
 
 function escapeHTML(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
@@ -81,25 +80,34 @@ function highlightJSON(src: string): string {
     if (ch === '"') {
       let j = i + 1;
       while (j < src.length && src[j] !== '"') {
-        if (src[j] === '\\') j++;
+        if (src[j] === "\\") j++;
         j++;
       }
       j++; // closing quote
       const raw = escapeHTML(src.slice(i, j));
       let k = j;
-      while (k < src.length && (src[k] === ' ' || src[k] === '\t')) k++;
-      if (src[k] === ':') {
-        out += '<span class="jk">' + raw + '</span>';
+      while (k < src.length && (src[k] === " " || src[k] === "\t")) k++;
+      if (src[k] === ":") {
+        out += '<span class="jk">' + raw + "</span>";
       } else {
-        out += '<span class="js">' + raw + '</span>';
+        out += '<span class="js">' + raw + "</span>";
       }
       i = j;
-    } else if (ch === '-' || (ch >= '0' && ch <= '9')) {
+    } else if (ch === "-" || (ch >= "0" && ch <= "9")) {
       let j = i;
-      if (src[j] === '-') j++;
-      while (j < src.length && ((src[j] >= '0' && src[j] <= '9') || src[j] === '.' || src[j] === 'e' || src[j] === 'E' || src[j] === '+' || src[j] === '-')) j++;
-      if (j > i + (src[i] === '-' ? 1 : 0)) {
-        out += '<span class="jn">' + escapeHTML(src.slice(i, j)) + '</span>';
+      if (src[j] === "-") j++;
+      while (
+        j < src.length &&
+        ((src[j] >= "0" && src[j] <= "9") ||
+          src[j] === "." ||
+          src[j] === "e" ||
+          src[j] === "E" ||
+          src[j] === "+" ||
+          src[j] === "-")
+      )
+        j++;
+      if (j > i + (src[i] === "-" ? 1 : 0)) {
+        out += '<span class="jn">' + escapeHTML(src.slice(i, j)) + "</span>";
         i = j;
       } else {
         out += escapeHTML(ch);
@@ -107,7 +115,7 @@ function highlightJSON(src: string): string {
       }
     } else if (src.startsWith("true", i) || src.startsWith("false", i) || src.startsWith("null", i)) {
       const word = src.startsWith("true", i) ? "true" : src.startsWith("false", i) ? "false" : "null";
-      out += '<span class="jb">' + word + '</span>';
+      out += '<span class="jb">' + word + "</span>";
       i += word.length;
     } else {
       out += escapeHTML(ch);
@@ -349,10 +357,18 @@ export class UI {
 
     bar.append(
       this.playBtn,
-      this.sep(), speedGroup,
-      this.sep(), lossGroup,
-      this.sep(), this.addNodeBtn, fitBtn,
-      this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay, this.arrivalAvgDisplay,
+      this.sep(),
+      speedGroup,
+      this.sep(),
+      lossGroup,
+      this.sep(),
+      this.addNodeBtn,
+      fitBtn,
+      this.sep(),
+      this.timeDisplay,
+      this.historyDisplay,
+      this.convergenceDisplay,
+      this.arrivalAvgDisplay,
     );
   }
 
@@ -391,11 +407,7 @@ export class UI {
 
     const legendItems: [string, string, string][] = [
       [C_BROADCAST, "circle", "Broadcast gossip"],
-      [C_UNICAST,   "line",   "Unicast epidemic"],
-      [C_PERIODIC,  "line",   "Periodic unicast"],
-      [C_FORWARD,   "dash",   "Epidemic forward"],
-      [C_PEER_FRESH,"dot",    "Peer (fresh)"],
-      [C_PEER_STALE,"dot",    "Peer (stale)"],
+      [C_SHARD, "line", "Shard gossip"],
     ];
 
     for (const [color, kind, label] of legendItems) {
@@ -449,15 +461,20 @@ export class UI {
     panel.appendChild(configTitle);
 
     const editorWrap = document.createElement("div");
-    editorWrap.style.cssText = "position:relative;flex:1;min-height:120px;overflow:hidden;border:1px solid #444;border-radius:3px;background:#1e1e1e";
+    editorWrap.style.cssText =
+      "position:relative;flex:1;min-height:120px;overflow:hidden;border:1px solid #444;border-radius:3px;background:#1e1e1e";
 
     const pre = document.createElement("pre");
-    pre.style.cssText = EDITOR_TEXT_CSS + ";position:absolute;top:0;left:0;right:0;bottom:0;overflow:auto;color:#d4d4d4;pointer-events:none;z-index:0";
+    pre.style.cssText =
+      EDITOR_TEXT_CSS +
+      ";position:absolute;top:0;left:0;right:0;bottom:0;overflow:auto;color:#d4d4d4;pointer-events:none;z-index:0";
     pre.setAttribute("aria-hidden", "true");
     this.configPre = pre;
 
     const ta = document.createElement("textarea");
-    ta.style.cssText = EDITOR_TEXT_CSS + ";position:absolute;top:0;left:0;width:100%;height:100%;color:transparent;caret-color:#d4d4d4;background:transparent;border:none;outline:none;resize:none;overflow:auto;z-index:1";
+    ta.style.cssText =
+      EDITOR_TEXT_CSS +
+      ";position:absolute;top:0;left:0;width:100%;height:100%;color:transparent;caret-color:#d4d4d4;background:transparent;border:none;outline:none;resize:none;overflow:auto;z-index:1";
     ta.spellcheck = false;
     ta.addEventListener("input", () => this.syncHighlight());
     ta.addEventListener("scroll", () => {
@@ -475,19 +492,48 @@ export class UI {
 
     const captureBtn = document.createElement("button");
     captureBtn.textContent = "Capture";
-    captureBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#2980b9;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    captureBtn.style.cssText =
+      "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#2980b9;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
     captureBtn.addEventListener("click", () => this.captureConfig());
 
     const applyConfigBtn = document.createElement("button");
     applyConfigBtn.textContent = "Apply";
-    applyConfigBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#27ae60;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    applyConfigBtn.style.cssText =
+      "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#27ae60;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
     applyConfigBtn.addEventListener("click", () => {
       try {
         const config = JSON.parse(this.configTextarea.value);
         if (typeof config.seed !== "number") throw new Error("seed must be a number");
         if (!Array.isArray(config.nodes)) throw new Error("nodes must be an array");
-        if (config.network?.periodic_unicast !== undefined && typeof config.network.periodic_unicast !== "boolean") {
-          throw new Error("network.periodic_unicast must be a boolean");
+        if (!config.network || !Array.isArray(config.network.delay) || config.network.delay.length !== 2) {
+          throw new Error("network.delay must be a pair");
+        }
+        if (typeof config.network.loss_probability !== "number") {
+          throw new Error("network.loss_probability must be a number");
+        }
+        if (!config.protocol || typeof config.protocol !== "object") {
+          throw new Error("protocol object is required");
+        }
+        if (typeof config.protocol.shard_count !== "number") {
+          throw new Error("protocol.shard_count must be a number");
+        }
+        if (typeof config.protocol.subject_id_modulus !== "number") {
+          throw new Error("protocol.subject_id_modulus must be a number");
+        }
+        if (typeof config.protocol.gossip_startup_delay !== "number") {
+          throw new Error("protocol.gossip_startup_delay must be a number");
+        }
+        if (typeof config.protocol.gossip_period !== "number") {
+          throw new Error("protocol.gossip_period must be a number");
+        }
+        if (typeof config.protocol.gossip_dither !== "number") {
+          throw new Error("protocol.gossip_dither must be a number");
+        }
+        if (typeof config.protocol.gossip_broadcast_fraction !== "number") {
+          throw new Error("protocol.gossip_broadcast_fraction must be a number");
+        }
+        if (typeof config.protocol.gossip_urgent_delay !== "number") {
+          throw new Error("protocol.gossip_urgent_delay must be a number");
         }
         this.onApplyConfig?.(config);
       } catch (e: any) {
@@ -497,7 +543,8 @@ export class UI {
 
     const generateBtn = document.createElement("button");
     generateBtn.textContent = "Generate\u2026";
-    generateBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#8e44ad;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    generateBtn.style.cssText =
+      "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#8e44ad;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
     generateBtn.addEventListener("click", () => this.showGenerateDialog());
 
     btnRow.append(captureBtn, applyConfigBtn, generateBtn);
@@ -507,7 +554,13 @@ export class UI {
     this.captureConfig();
   }
 
-  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, historySize?: number, maxTimeUs?: number, rewound = false): void {
+  updateFrame(
+    timeUs: number,
+    snaps: Map<number, NodeSnapshot>,
+    historySize?: number,
+    maxTimeUs?: number,
+    rewound = false,
+  ): void {
     // Propagate focus state
     this.renderer.stickyTopicHash = this.stickyTopicHash;
     this.renderer.hoverTopicHash = this.hoverTopicHash;
@@ -579,14 +632,16 @@ export class UI {
       let block = this.nodeBlocks.get(nid);
       if (!block) {
         block = this.createNodeBlock(nid);
-        block.onHover = (id) => { this.renderer.hoveredNodeId = id; };
+        block.onHover = (id) => {
+          this.renderer.hoveredNodeId = id;
+        };
         this.overlayContainer.appendChild(block.el);
         this.nodeBlocks.set(nid, block);
       }
 
       block.setMinimalMode(minimal);
       const rxRate = this.eventLog?.getRxRate(nid, timeUs, 6_000_000);
-      block.update(snap, timeUs, this.renderer.isNodeInConflict(nid), this.renderer.getPeerFlashIndices(nid), rxRate);
+      block.update(snap, timeUs, this.renderer.isNodeInConflict(nid), rxRate);
       block.setPosition(pos.x, pos.y);
       boxSizes.set(nid, block.getSize());
     }
@@ -779,7 +834,7 @@ export class UI {
         return;
       }
       const h = topicHash(name);
-      const sid = subjectId(h, ev, SUBJECT_ID_MODULUS);
+      const sid = subjectId(h, ev, this.sim.net.protocol.subjectIdModulus);
       sidValue.textContent = String(sid);
     };
     nameInput.addEventListener("input", updateSid);
@@ -791,14 +846,15 @@ export class UI {
       if (isNaN(val) || val < 0) return;
       // Use sim's findNameForSid via addTopicToNode with targetSid, but we just need the name.
       // Brute-force here to keep it self-contained.
-      const target = val;
+      const modulus = this.sim.net.protocol.subjectIdModulus;
+      const target = val % modulus;
       const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
       const ev = parseInt(evInput.value) || 0;
       for (let attempt = 0; attempt < 100000; attempt++) {
         let name = "c/";
         for (let i = 0; i < 5; i++) name += alphabet[Math.floor(Math.random() * alphabet.length)];
         const h = topicHash(name);
-        if (subjectId(h, ev, SUBJECT_ID_MODULUS) === target) {
+        if (subjectId(h, ev, this.sim.net.protocol.subjectIdModulus) === target) {
           nameInput.value = name;
           updateSid();
           return;
@@ -818,11 +874,16 @@ export class UI {
       dlg.remove();
     };
     createBtn.addEventListener("click", doCreate);
-    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doCreate(); });
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doCreate();
+    });
 
     cancelBtn.addEventListener("click", () => dlg.remove());
     document.addEventListener("keydown", function esc(e) {
-      if (e.key === "Escape") { dlg.remove(); document.removeEventListener("keydown", esc); }
+      if (e.key === "Escape") {
+        dlg.remove();
+        document.removeEventListener("keydown", esc);
+      }
     });
 
     dlg.append(title, nameRow, sidRow, collideRow, evRow, lageRow, btnRow);
@@ -833,7 +894,8 @@ export class UI {
   private initTopicPanelResize(): void {
     const handle = document.getElementById("topic-resize");
     if (!handle) return;
-    let startX = 0, startW = 0;
+    let startX = 0,
+      startW = 0;
     const onMove = (e: MouseEvent) => {
       const newW = Math.max(120, startW + (e.clientX - startX));
       this.topicPanel.style.width = newW + "px";
@@ -856,7 +918,8 @@ export class UI {
     const handle = document.getElementById("side-resize");
     if (!handle) return;
     const panel = handle.parentElement!;
-    let startX = 0, startW = 0;
+    let startX = 0,
+      startW = 0;
     const onMove = (e: MouseEvent) => {
       const newW = Math.min(600, Math.max(200, startW - (e.clientX - startX)));
       panel.style.width = newW + "px";
@@ -877,9 +940,9 @@ export class UI {
 
   captureConfig(): void {
     const nodeIds = [...this.sim.nodes.keys()].sort((a, b) => a - b);
-    const nodes = nodeIds.map(nid => {
+    const nodes = nodeIds.map((nid) => {
       const node = this.sim.nodes.get(nid)!;
-      const topics = [...node.topics.values()].map(t => {
+      const topics = [...node.topics.values()].map((t) => {
         const entry: any = { name: t.name };
         if (t.evictions !== 0) entry.evictions = t.evictions;
         const lage = topicLage(t.tsCreatedUs, this.sim.nowUs);
@@ -891,9 +954,17 @@ export class UI {
     const obj: any = {
       seed: this.sim.seed >>> 0,
       network: {
-        delay_us: this.sim.net.delayUs,
+        delay: this.sim.net.delay,
         loss_probability: this.sim.net.lossProbability,
-        periodic_unicast: this.sim.net.periodicUnicastEnabled,
+      },
+      protocol: {
+        subject_id_modulus: this.sim.net.protocol.subjectIdModulus,
+        shard_count: this.sim.net.protocol.shardCount,
+        gossip_startup_delay: this.sim.net.protocol.gossipStartupDelay,
+        gossip_period: this.sim.net.protocol.gossipPeriod,
+        gossip_dither: this.sim.net.protocol.gossipDither,
+        gossip_broadcast_fraction: this.sim.net.protocol.gossipBroadcastFraction,
+        gossip_urgent_delay: this.sim.net.protocol.gossipUrgentDelay,
       },
       nodes,
     };
@@ -907,7 +978,8 @@ export class UI {
 
   private showGenerateDialog(): void {
     const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000";
+    overlay.style.cssText =
+      "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000";
 
     const box = document.createElement("div");
     box.style.cssText = "background:#2a2a2a;border:1px solid #444;border-radius:6px;padding:16px;min-width:260px";
@@ -927,24 +999,28 @@ export class UI {
       inp.type = "text";
       inp.inputMode = "numeric";
       inp.value = def;
-      inp.style.cssText = "width:100px;padding:2px 4px;font:11px 'Ubuntu Mono',monospace;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;text-align:right";
-      if (numeric) inp.addEventListener("input", () => { inp.value = inp.value.replace(/[^0-9]/g, ""); });
+      inp.style.cssText =
+        "width:100px;padding:2px 4px;font:11px 'Ubuntu Mono',monospace;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;text-align:right";
+      if (numeric)
+        inp.addEventListener("input", () => {
+          inp.value = inp.value.replace(/[^0-9]/g, "");
+        });
       row.append(lbl, inp);
       box.appendChild(row);
       return inp;
     };
 
     const curSeed = this.sim.seed >>> 0;
-    const curDelay = this.sim.net.delayUs;
+    const curDelay = this.sim.net.delay;
     const curLoss = this.sim.net.lossProbability;
-    const curPeriodic = this.sim.net.periodicUnicastEnabled;
+    const curProtocol = this.sim.net.protocol;
     const curNodes = this.sim.nodes.size;
 
     const seedInput = makeField("Seed", String(curSeed), true);
     const nodesInput = makeField("Nodes", String(curNodes), true);
     const topicsInput = makeField("Topics", "6", true);
     const collidingInput = makeField("Colliding topics", "2", true);
-    const delayInput = makeField("Delay (µs)", `${curDelay[0]}, ${curDelay[1]}`);
+    const delayInput = makeField("Delay (s)", `${curDelay[0]}, ${curDelay[1]}`);
     const lossInput = makeField("Loss probability", String(curLoss));
 
     const btnRow = document.createElement("div");
@@ -952,47 +1028,68 @@ export class UI {
 
     const genBtn = document.createElement("button");
     genBtn.textContent = "Generate";
-    genBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#8e44ad;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    genBtn.style.cssText =
+      "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#8e44ad;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
     genBtn.addEventListener("click", () => {
       const nc = Math.max(1, parseInt(nodesInput.value) || 1);
       const tc = Math.max(0, parseInt(topicsInput.value) || 0);
       const cc = Math.max(0, parseInt(collidingInput.value) || 0);
       const seed = (parseInt(seedInput.value) || curSeed) >>> 0;
-      const delayParts = delayInput.value.split(",").map(s => parseInt(s.trim()));
+      const delayParts = delayInput.value.split(",").map((s) => parseFloat(s.trim()));
       const delay: [number, number] = [
-        delayParts[0] > 0 ? delayParts[0] : curDelay[0],
-        (delayParts[1] ?? delayParts[0]) > 0 ? (delayParts[1] ?? delayParts[0]) : curDelay[1],
+        Number.isFinite(delayParts[0]) && delayParts[0] >= 0 ? delayParts[0] : curDelay[0],
+        Number.isFinite(delayParts[1] ?? delayParts[0]) && (delayParts[1] ?? delayParts[0]) >= 0
+          ? (delayParts[1] ?? delayParts[0])
+          : curDelay[1],
       ];
       const loss = Math.max(0, Math.min(1, parseFloat(lossInput.value) || curLoss));
       overlay.remove();
-      this.generateConfig(nc, tc, cc, seed, delay, loss, curPeriodic);
+      this.generateConfig(nc, tc, cc, seed, delay, loss, curProtocol);
     });
 
     const cancelBtn = document.createElement("button");
     cancelBtn.textContent = "Cancel";
-    cancelBtn.style.cssText = "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#555;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
+    cancelBtn.style.cssText =
+      "flex:1;padding:4px 0;font:12px 'Ubuntu Mono',monospace;background:#555;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer";
     cancelBtn.addEventListener("click", () => overlay.remove());
 
     btnRow.append(genBtn, cancelBtn);
     box.appendChild(btnRow);
     box.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "Enter") { e.preventDefault(); genBtn.click(); }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        genBtn.click();
+      }
     });
     overlay.appendChild(box);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
     document.body.appendChild(overlay);
   }
 
   private generateConfig(
-    nodeCount: number, topicCount: number, collidingCount: number,
-    seed: number, delay: [number, number], loss: number, periodicUnicast: boolean,
+    nodeCount: number,
+    topicCount: number,
+    collidingCount: number,
+    seed: number,
+    delay: [number, number],
+    loss: number,
+    protocol: {
+      subjectIdModulus: number;
+      shardCount: number;
+      gossipStartupDelay: number;
+      gossipPeriod: number;
+      gossipDither: number;
+      gossipBroadcastFraction: number;
+      gossipUrgentDelay: number;
+    },
   ): void {
-
     // Build per-node topic arrays
     const nodes: { topics: { name: string }[] }[] = [];
     for (let i = 0; i < nodeCount; i++) nodes.push({ topics: [] });
 
-    const randNode = () => Math.random() * nodeCount | 0;
+    const randNode = () => (Math.random() * nodeCount) | 0;
     const pickN = (count: number): number[] => {
       const picked = new Set<number>();
       while (picked.size < count) picked.add(randNode());
@@ -1003,18 +1100,18 @@ export class UI {
     const maxFanout = Math.min(3, nodeCount);
     for (let i = 0; i < topicCount; i++) {
       const name = genTopicName(i);
-      const fanout = 1 + (Math.random() * maxFanout | 0); // 1..maxFanout inclusive
+      const fanout = 1 + ((Math.random() * maxFanout) | 0); // 1..maxFanout inclusive
       for (const n of pickN(fanout)) nodes[n].topics.push({ name });
     }
 
     // Generate and distribute colliding topic groups
     for (let g = 0; g < collidingCount; g++) {
-      const targetSid = 10000 + g;
-      const [nameA, nameB] = findCollidingPair(targetSid);
+      const targetSid = g % protocol.subjectIdModulus;
+      const [nameA, nameB] = findCollidingPair(targetSid, protocol.subjectIdModulus);
       // Shuffle node indices and split into two groups for the two names
       const indices = Array.from({ length: nodeCount }, (_, i) => i);
       for (let i = indices.length - 1; i > 0; i--) {
-        const j = Math.random() * (i + 1) | 0;
+        const j = (Math.random() * (i + 1)) | 0;
         [indices[i], indices[j]] = [indices[j], indices[i]];
       }
       const half = Math.max(1, nodeCount >> 1);
@@ -1026,11 +1123,19 @@ export class UI {
     const obj: any = {
       seed: seed >>> 0,
       network: {
-        delay_us: [delay[0], delay[1]],
+        delay: [delay[0], delay[1]],
         loss_probability: loss,
-        periodic_unicast: periodicUnicast,
       },
-      nodes: nodes.map(n => n.topics.length > 0 ? { topics: n.topics } : {}),
+      protocol: {
+        subject_id_modulus: protocol.subjectIdModulus,
+        shard_count: protocol.shardCount,
+        gossip_startup_delay: protocol.gossipStartupDelay,
+        gossip_period: protocol.gossipPeriod,
+        gossip_dither: protocol.gossipDither,
+        gossip_broadcast_fraction: protocol.gossipBroadcastFraction,
+        gossip_urgent_delay: protocol.gossipUrgentDelay,
+      },
+      nodes: nodes.map((n) => (n.topics.length > 0 ? { topics: n.topics } : {})),
     };
     this.configTextarea.value = compactJSON(obj);
     this.syncHighlight();
@@ -1106,13 +1211,19 @@ export class UI {
       let gid = -1;
       for (const c of cells) {
         const existing = conflictInfo.get(`${c.hash}:${c.nid}`);
-        if (existing) { gid = existing.groupId; break; }
+        if (existing) {
+          gid = existing.groupId;
+          break;
+        }
       }
       if (gid < 0) gid = nextGroupId++;
       for (const c of cells) {
         const k = `${c.hash}:${c.nid}`;
         let info = conflictInfo.get(k);
-        if (!info) { info = { groupId: gid, reasons: [] }; conflictInfo.set(k, info); }
+        if (!info) {
+          info = { groupId: gid, reasons: [] };
+          conflictInfo.set(k, info);
+        }
         if (!info.reasons.includes(reason)) info.reasons.push(reason);
       }
     };
@@ -1121,7 +1232,10 @@ export class UI {
     for (const [nid, snap] of snaps) {
       if (!snap.online) continue;
       let group = partitionNodes.get(snap.partitionSet);
-      if (!group) { group = []; partitionNodes.set(snap.partitionSet, group); }
+      if (!group) {
+        group = [];
+        partitionNodes.set(snap.partitionSet, group);
+      }
       group.push(nid);
     }
 
@@ -1133,12 +1247,21 @@ export class UI {
         const snap = snaps.get(nid)!;
         for (const t of snap.topics) {
           let evMap = hashToEvByNode.get(t.hash);
-          if (!evMap) { evMap = new Map(); hashToEvByNode.set(t.hash, evMap); }
+          if (!evMap) {
+            evMap = new Map();
+            hashToEvByNode.set(t.hash, evMap);
+          }
           evMap.set(nid, t.evictions);
           let hMap = sidToHashes.get(t.subjectId);
-          if (!hMap) { hMap = new Map(); sidToHashes.set(t.subjectId, hMap); }
+          if (!hMap) {
+            hMap = new Map();
+            sidToHashes.set(t.subjectId, hMap);
+          }
           let nList = hMap.get(t.hash);
-          if (!nList) { nList = []; hMap.set(t.hash, nList); }
+          if (!nList) {
+            nList = [];
+            hMap.set(t.hash, nList);
+          }
           nList.push(nid);
         }
       }
@@ -1148,7 +1271,7 @@ export class UI {
         const vals = new Set(evMap.values());
         if (vals.size > 1) {
           const detail = [...evMap.entries()].map(([n, e]) => `Node${n}=${e}`).join(", ");
-          const cells = [...evMap.keys()].map(nid => ({ hash, nid }));
+          const cells = [...evMap.keys()].map((nid) => ({ hash, nid }));
           assignGroup(cells, `eviction count diverged (${detail})`);
         }
       }
@@ -1171,9 +1294,10 @@ export class UI {
     // Usable range: 160-410 (wrapping), i.e. cyan→blue→purple→red→orange
     const groupCount = nextGroupId;
     const groupHues: number[] = [];
-    const usableStart = 160, usableRange = 250; // 160..410 (mod 360)
+    const usableStart = 160,
+      usableRange = 250; // 160..410 (mod 360)
     for (let i = 0; i < groupCount; i++) {
-      const hue = (usableStart + (i * 137.508) % usableRange) % 360;
+      const hue = (usableStart + ((i * 137.508) % usableRange)) % 360;
       groupHues.push(hue);
     }
 
@@ -1329,7 +1453,8 @@ export class UI {
     const tbody = document.createElement("tbody");
     // Sort topics by earliest sortOrder ascending (oldest on top, newest at bottom)
     const sortedTopics = [...matrix.entries()].sort((a, b) => {
-      let minA = Infinity, minB = Infinity;
+      let minA = Infinity,
+        minB = Infinity;
       for (const t of a[1].cells.values()) if (t.sortOrder < minA) minA = t.sortOrder;
       for (const t of b[1].cells.values()) if (t.sortOrder < minB) minB = t.sortOrder;
       return minA - minB;
@@ -1340,10 +1465,11 @@ export class UI {
       tr.classList.add("row-highlight");
       rows.push(tr);
       const col = columnCells.get(colIdx);
-      if (col) for (const c of col) {
-        c.classList.add("col-highlight");
-        cols.push(c);
-      }
+      if (col)
+        for (const c of col) {
+          c.classList.add("col-highlight");
+          cols.push(c);
+        }
     };
 
     const applyTopicHover = (hash: bigint, row: TopicRow, tr: HTMLTableRowElement, colIdx: number) => {
@@ -1516,8 +1642,12 @@ export class UI {
       height: 26px; box-sizing: border-box;
       display: inline-flex; align-items: center; justify-content: center;
     `;
-    b.addEventListener("mouseenter", () => { b.style.filter = "brightness(1.2)"; });
-    b.addEventListener("mouseleave", () => { b.style.filter = ""; });
+    b.addEventListener("mouseenter", () => {
+      b.style.filter = "brightness(1.2)";
+    });
+    b.addEventListener("mouseleave", () => {
+      b.style.filter = "";
+    });
     return b;
   }
 

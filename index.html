@@ -1,378 +1,460 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<meta http-equiv="Pragma" content="no-cache">
-<meta http-equiv="Expires" content="0">
-<link rel="icon" type="image/png" href="static/favicon.png">
-<meta property="og:title" content="Cyphal distributed consensus simulator &amp; visualizer">
-<meta property="og:description" content="Interactive simulator and visualizer for Cyphal distributed consensus protocols.">
-<meta property="og:image" content="static/screenshot.png">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Cyphal distributed consensus simulator &amp; visualizer">
-<meta name="twitter:image" content="static/screenshot.png">
-<title>Cyphal distributed consensus simulator &amp; visualizer</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; overflow: hidden; }
-  body {
-    background: #1e1e1e;
-    color: #fff;
-    font-family: "Ubuntu Mono", "Consolas", monospace;
-    font-size: 12px;
-    display: flex;
-    flex-direction: column;
-  }
-  @media (max-width: 1500px) {
-    body { zoom: 0.7; }
-  }
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <link rel="icon" type="image/png" href="static/favicon.png" />
+    <meta property="og:title" content="Cyphal distributed consensus simulator &amp; visualizer" />
+    <meta
+      property="og:description"
+      content="Interactive simulator and visualizer for Cyphal distributed consensus protocols."
+    />
+    <meta property="og:image" content="static/screenshot.png" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Cyphal distributed consensus simulator &amp; visualizer" />
+    <meta name="twitter:image" content="static/screenshot.png" />
+    <title>Cyphal distributed consensus simulator &amp; visualizer</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        background: #1e1e1e;
+        color: #fff;
+        font-family: "Ubuntu Mono", "Consolas", monospace;
+        font-size: 12px;
+        display: flex;
+        flex-direction: column;
+      }
+      @media (max-width: 1500px) {
+        body {
+          zoom: 0.7;
+        }
+      }
 
-  #top-bar {
-    height: 42px;
-    background: #2a2a2a;
-    border-bottom: 1px solid #444;
-    display: flex;
-    align-items: center;
-    padding: 0 10px;
-    flex-shrink: 0;
-    white-space: nowrap;
-    overflow-x: auto;
-  }
+      #top-bar {
+        height: 42px;
+        background: #2a2a2a;
+        border-bottom: 1px solid #444;
+        display: flex;
+        align-items: center;
+        padding: 0 10px;
+        flex-shrink: 0;
+        white-space: nowrap;
+        overflow-x: auto;
+      }
 
-  #main-area {
-    flex: 1;
-    display: flex;
-    overflow: hidden;
-  }
+      #main-area {
+        flex: 1;
+        display: flex;
+        overflow: hidden;
+      }
 
-  #canvas-container {
-    flex: 1;
-    position: relative;
-    overflow: hidden;
-    touch-action: none;
-  }
+      #canvas-container {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+        touch-action: none;
+      }
 
-  #sim-canvas {
-    display: block;
-  }
+      #sim-canvas {
+        display: block;
+      }
 
-  #world-wrapper {
-    position: absolute;
-    top: 0; left: 0;
-    width: 0; height: 0;
-    transform-origin: 0 0;
-    pointer-events: none;
-  }
-  #overlay-container {
-    position: absolute;
-    top: 0; left: 0;
-    width: 0; height: 0;
-    pointer-events: none;
-  }
-  #overlay-container > * {
-    pointer-events: auto;
-  }
+      #world-wrapper {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 0;
+        height: 0;
+        transform-origin: 0 0;
+        pointer-events: none;
+      }
+      #overlay-container {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 0;
+        height: 0;
+        pointer-events: none;
+      }
+      #overlay-container > * {
+        pointer-events: auto;
+      }
 
-  /* Node blocks */
-  .node-block {
-    position: absolute;
-    width: 280px;
-    background: #2a2a2a;
-    border: 1px solid #555;
-    border-radius: 6px;
-    color: #fff;
-    font-size: 10px;
-    pointer-events: auto;
-    user-select: none;
-  }
-  .node-block.minimal .nb-status,
-  .node-block.minimal .nb-topics,
-  .node-block.minimal .nb-peers,
-  .node-block.minimal .nb-resize,
-  .node-block.minimal .nb-header button:not(.nb-part-btn) {
-    display: none !important;
-  }
-  .node-block.minimal {
-    width: auto;
-    min-width: 60px;
-  }
-  .node-block.minimal .nb-header {
-    padding: 3px 6px;
-    flex-wrap: nowrap;
-    white-space: nowrap;
-    border-radius: 5px;
-  }
+      /* Node blocks */
+      .node-block {
+        position: absolute;
+        width: 280px;
+        background: #2a2a2a;
+        border: 1px solid #555;
+        border-radius: 6px;
+        color: #fff;
+        font-size: 10px;
+        pointer-events: auto;
+        user-select: none;
+      }
+      .node-block.minimal .nb-status,
+      .node-block.minimal .nb-topics,
+      .node-block.minimal .nb-peers,
+      .node-block.minimal .nb-resize,
+      .node-block.minimal .nb-header button:not(.nb-part-btn) {
+        display: none !important;
+      }
+      .node-block.minimal {
+        width: auto;
+        min-width: 60px;
+      }
+      .node-block.minimal .nb-header {
+        padding: 3px 6px;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+        border-radius: 5px;
+      }
 
-  .nb-header {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 6px;
-    background: #333;
-    border-radius: 5px 5px 0 0;
-    cursor: grab;
-    flex-wrap: wrap;
-  }
-  .nb-header button {
-    padding: 1px 5px;
-    cursor: pointer;
-    font: 9px "Ubuntu Mono", monospace;
-    border: 1px solid #666;
-    border-radius: 3px;
-    color: #fff;
-    background: #555;
-  }
-  .nb-header button:hover { filter: brightness(1.3); }
-  .nb-part-btn { font-weight: bold; min-width: 18px; }
-  .nb-destroy { background: #c0392b !important; }
-  .nb-add-topic { background: #2980b9 !important; }
+      .nb-header {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 6px;
+        background: #333;
+        border-radius: 5px 5px 0 0;
+        cursor: grab;
+        flex-wrap: wrap;
+      }
+      .nb-header button {
+        padding: 1px 5px;
+        cursor: pointer;
+        font:
+          9px "Ubuntu Mono",
+          monospace;
+        border: 1px solid #666;
+        border-radius: 3px;
+        color: #fff;
+        background: #555;
+      }
+      .nb-header button:hover {
+        filter: brightness(1.3);
+      }
+      .nb-part-btn {
+        font-weight: bold;
+        min-width: 18px;
+      }
+      .nb-destroy {
+        background: #c0392b !important;
+      }
+      .nb-add-topic {
+        background: #2980b9 !important;
+      }
 
-  .nb-status {
-    padding: 2px 6px;
-    font-size: 9px;
-    color: #fff;
-    border-bottom: 1px solid #444;
-  }
-  .nb-status-grid {
-    display: grid;
-    grid-template-columns: auto 1fr auto 1fr;
-    column-gap: 4px;
-  }
-  .nb-sl {
-    color: #999;
-  }
+      .nb-status {
+        padding: 2px 6px;
+        font-size: 9px;
+        color: #fff;
+        border-bottom: 1px solid #444;
+      }
+      .nb-status-grid {
+        display: grid;
+        grid-template-columns: auto 1fr auto 1fr;
+        column-gap: 4px;
+      }
+      .nb-sl {
+        color: #999;
+      }
 
-  .nb-topics {
-    max-height: 120px;
-    overflow-y: auto;
-  }
-  .nb-topics table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 9px;
-  }
-  .nb-topics th {
-    background: #333;
-    padding: 1px 3px;
-    text-align: center;
-    font-weight: bold;
-    border-bottom: 1px solid #555;
-    position: sticky;
-    top: 0;
-  }
-  .nb-topics td {
-    padding: 1px 3px;
-    text-align: center;
-    white-space: nowrap;
-    border-bottom: 1px solid #333;
-  }
-  .nb-topics td:first-child {
-    text-align: left;
-    max-width: 70px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .nb-ev-cell, .nb-lage-cell {
-    white-space: nowrap;
-  }
-  .nb-inline-btn {
-    padding: 0 3px;
-    cursor: pointer;
-    font: 9px "Ubuntu Mono", monospace;
-    background: #444;
-    color: #fff;
-    border: 1px solid #555;
-    border-radius: 2px;
-    line-height: 1;
-    vertical-align: middle;
-  }
-  .nb-inline-btn:hover { background: #666; }
+      .nb-topics {
+        max-height: 120px;
+        overflow-y: auto;
+      }
+      .nb-topics table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 9px;
+      }
+      .nb-topics th {
+        background: #333;
+        padding: 1px 3px;
+        text-align: center;
+        font-weight: bold;
+        border-bottom: 1px solid #555;
+        position: sticky;
+        top: 0;
+      }
+      .nb-topics td {
+        padding: 1px 3px;
+        text-align: center;
+        white-space: nowrap;
+        border-bottom: 1px solid #333;
+      }
+      .nb-topics td:first-child {
+        text-align: left;
+        max-width: 70px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .nb-ev-cell,
+      .nb-lage-cell {
+        white-space: nowrap;
+      }
+      .nb-inline-btn {
+        padding: 0 3px;
+        cursor: pointer;
+        font:
+          9px "Ubuntu Mono",
+          monospace;
+        background: #444;
+        color: #fff;
+        border: 1px solid #555;
+        border-radius: 2px;
+        line-height: 1;
+        vertical-align: middle;
+      }
+      .nb-inline-btn:hover {
+        background: #666;
+      }
 
-  .nb-peers {
-    border-top: 1px solid #444;
-  }
-  .nb-peers table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 8px;
-  }
-  .nb-peers td {
-    padding: 1px 2px;
-    text-align: center;
-    white-space: nowrap;
-  }
+      .nb-peers {
+        border-top: 1px solid #444;
+      }
+      .nb-peers table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 8px;
+      }
+      .nb-peers td {
+        padding: 1px 2px;
+        text-align: center;
+        white-space: nowrap;
+      }
 
-  .nb-resize {
-    height: 5px;
-    cursor: ns-resize;
-    background: transparent;
-    border-top: 1px solid #444;
-  }
-  .nb-highlighted {
-    border-color: #bb86fc !important;
-    box-shadow: 0 0 8px #bb86fc;
-  }
-  .nb-topic-highlighted td {
-    background: #4a148c !important;
-  }
+      .nb-resize {
+        height: 5px;
+        cursor: ns-resize;
+        background: transparent;
+        border-top: 1px solid #444;
+      }
+      .nb-highlighted {
+        border-color: #bb86fc !important;
+        box-shadow: 0 0 8px #bb86fc;
+      }
+      .nb-topic-highlighted td {
+        background: #4a148c !important;
+      }
 
-  .nb-resize:hover { background: #555; }
+      .nb-resize:hover {
+        background: #555;
+      }
 
-  #topic-panel {
-    width: 420px;
-    min-width: 120px;
-    background: #222;
-    border-right: 1px solid #444;
-    overflow: auto;
-    flex-shrink: 0;
-    position: relative;
-    font-size: 10px;
-  }
-  #topic-panel table {
-    border-collapse: collapse;
-    width: 100%;
-  }
-  #topic-panel th, #topic-panel td {
-    border: 1px solid #444;
-    padding: 2px 4px;
-    text-align: center;
-    white-space: nowrap;
-  }
-  #topic-panel th {
-    background: #2a2a2a;
-    position: sticky;
-    top: 21px;
-    z-index: 2;
-    font-weight: bold;
-  }
-  #topic-panel td:first-child, #topic-panel th:first-child {
-    position: sticky;
-    left: 0;
-    z-index: 1;
-    background: #2a2a2a;
-    text-align: left;
-  }
-  #topic-panel th:first-child {
-    z-index: 3;
-  }
-  .cell-stale { background: #5c5c10 !important; }
-  .cell-highlighted { background: #4a148c !important; }
-  .cell-sticky { background: #2d1050 !important; }
-  .cell-line1 { font-size: 9px; }
-  .cell-line2 { font-size: 9px; color: #fff; }
-  #topic-panel tr.row-highlight > td { background: rgba(255,255,255,0.04); }
-  #topic-panel .col-highlight { background: rgba(255,255,255,0.04); }
-  #topic-panel td:first-child.col-highlight,
-  #topic-panel tr.row-highlight > td:first-child { background: #333; }
-  #topic-panel caption {
-    text-align: left;
-    padding: 4px;
-    font-weight: bold;
-    font-size: 13px;
-    background: #222;
-    position: sticky;
-    top: 0;
-    z-index: 4;
-  }
+      #topic-panel {
+        width: 420px;
+        min-width: 120px;
+        background: #222;
+        border-right: 1px solid #444;
+        overflow: auto;
+        flex-shrink: 0;
+        position: relative;
+        font-size: 10px;
+      }
+      #topic-panel table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      #topic-panel th,
+      #topic-panel td {
+        border: 1px solid #444;
+        padding: 2px 4px;
+        text-align: center;
+        white-space: nowrap;
+      }
+      #topic-panel th {
+        background: #2a2a2a;
+        position: sticky;
+        top: 21px;
+        z-index: 2;
+        font-weight: bold;
+      }
+      #topic-panel td:first-child,
+      #topic-panel th:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 1;
+        background: #2a2a2a;
+        text-align: left;
+      }
+      #topic-panel th:first-child {
+        z-index: 3;
+      }
+      .cell-stale {
+        background: #5c5c10 !important;
+      }
+      .cell-highlighted {
+        background: #4a148c !important;
+      }
+      .cell-sticky {
+        background: #2d1050 !important;
+      }
+      .cell-line1 {
+        font-size: 9px;
+      }
+      .cell-line2 {
+        font-size: 9px;
+        color: #fff;
+      }
+      #topic-panel tr.row-highlight > td {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      #topic-panel .col-highlight {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      #topic-panel td:first-child.col-highlight,
+      #topic-panel tr.row-highlight > td:first-child {
+        background: #333;
+      }
+      #topic-panel caption {
+        text-align: left;
+        padding: 4px;
+        font-weight: bold;
+        font-size: 13px;
+        background: #222;
+        position: sticky;
+        top: 0;
+        z-index: 4;
+      }
 
-  #topic-resize {
-    width: 5px;
-    flex-shrink: 0;
-    cursor: col-resize;
-    background: transparent;
-    z-index: 10;
-  }
-  #topic-resize:hover { background: #666; }
+      #topic-resize {
+        width: 5px;
+        flex-shrink: 0;
+        cursor: col-resize;
+        background: transparent;
+        z-index: 10;
+      }
+      #topic-resize:hover {
+        background: #666;
+      }
 
-  #side-panel {
-    width: 320px;
-    background: #262626;
-    border-left: 1px solid #444;
-    padding: 12px;
-    overflow-y: auto;
-    flex-shrink: 0;
-    position: relative;
-    display: flex;
-    flex-direction: column;
-  }
-  #side-resize {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 4px;
-    height: 100%;
-    cursor: col-resize;
-    background: transparent;
-    z-index: 10;
-  }
-  #side-resize:hover { background: #666; }
+      #side-panel {
+        width: 320px;
+        background: #262626;
+        border-left: 1px solid #444;
+        padding: 12px;
+        overflow-y: auto;
+        flex-shrink: 0;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+      }
+      #side-resize {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 4px;
+        height: 100%;
+        cursor: col-resize;
+        background: transparent;
+        z-index: 10;
+      }
+      #side-resize:hover {
+        background: #666;
+      }
 
-  #status-bar {
-    height: 20px;
-    line-height: 20px;
-    background: #2a2a2a;
-    border-top: 1px solid #444;
-    padding: 0 8px;
-    font-size: 13px;
-    color: #fff;
-    flex-shrink: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+      #status-bar {
+        height: 20px;
+        line-height: 20px;
+        background: #2a2a2a;
+        border-top: 1px solid #444;
+        padding: 0 8px;
+        font-size: 13px;
+        color: #fff;
+        flex-shrink: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
-  #timeline-container {
-    height: 180px;
-    background: #1a1a1a;
-    border-top: 1px solid #444;
-    position: relative;
-    flex-shrink: 0;
-  }
-  #timeline-resize-handle {
-    height: 5px;
-    cursor: ns-resize;
-    background: transparent;
-  }
-  #timeline-resize-handle:hover,
-  #timeline-resize-handle:active {
-    background: rgba(255,255,255,0.15);
-  }
-  .jk { color: #9cdcfe; }
-  .js { color: #ce9178; }
-  .jn { color: #b5cea8; }
-  .jb { color: #569cd6; }
+      #timeline-container {
+        height: 180px;
+        background: #1a1a1a;
+        border-top: 1px solid #444;
+        position: relative;
+        flex-shrink: 0;
+      }
+      #timeline-resize-handle {
+        height: 5px;
+        cursor: ns-resize;
+        background: transparent;
+      }
+      #timeline-resize-handle:hover,
+      #timeline-resize-handle:active {
+        background: rgba(255, 255, 255, 0.15);
+      }
+      .jk {
+        color: #9cdcfe;
+      }
+      .js {
+        color: #ce9178;
+      }
+      .jn {
+        color: #b5cea8;
+      }
+      .jb {
+        color: #569cd6;
+      }
 
-  #timeline-canvas { display: block; width: 100%; height: calc(100% - 5px); touch-action: none; }
-  #timeline-tooltip, #sim-tooltip {
-    position: absolute; display: none; pointer-events: none;
-    background: #333; border: 1px solid #555; padding: 4px 8px;
-    font-size: 11px; color: #fff; border-radius: 3px; z-index: 10;
-    white-space: pre;
-  }
-</style>
-</head>
-<body>
-  <div id="top-bar"></div>
-  <div id="main-area">
-    <div id="topic-panel"></div><div id="topic-resize"></div>
-    <div id="canvas-container">
-      <canvas id="sim-canvas"></canvas>
-      <div id="world-wrapper">
-        <div id="overlay-container"></div>
+      #timeline-canvas {
+        display: block;
+        width: 100%;
+        height: calc(100% - 5px);
+        touch-action: none;
+      }
+      #timeline-tooltip,
+      #sim-tooltip {
+        position: absolute;
+        display: none;
+        pointer-events: none;
+        background: #333;
+        border: 1px solid #555;
+        padding: 4px 8px;
+        font-size: 11px;
+        color: #fff;
+        border-radius: 3px;
+        z-index: 10;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="top-bar"></div>
+    <div id="main-area">
+      <div id="topic-panel"></div>
+      <div id="topic-resize"></div>
+      <div id="canvas-container">
+        <canvas id="sim-canvas"></canvas>
+        <div id="world-wrapper">
+          <div id="overlay-container"></div>
+        </div>
+        <div id="sim-tooltip"></div>
       </div>
-      <div id="sim-tooltip"></div>
+      <div id="side-panel"><div id="side-resize"></div></div>
     </div>
-    <div id="side-panel"><div id="side-resize"></div></div>
-  </div>
-  <div id="timeline-container">
-    <div id="timeline-resize-handle"></div>
-    <canvas id="timeline-canvas"></canvas>
-    <div id="timeline-tooltip"></div>
-  </div>
-  <div id="status-bar"></div>
-  <script type="module" src="dist/main.js"></script>
-</body>
+    <div id="timeline-container">
+      <div id="timeline-resize-handle"></div>
+      <canvas id="timeline-canvas"></canvas>
+      <div id="timeline-tooltip"></div>
+    </div>
+    <div id="status-bar"></div>
+    <script type="module" src="dist/main.js"></script>
+  </body>
 </html>
