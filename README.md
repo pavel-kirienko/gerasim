@@ -22,8 +22,7 @@ Requires Node.js:
 
 ```bash
 npm install
-./build.sh
-python3 -m http.server 8080
+./build.sh && python3 -m http.server 8080
 ```
 
 ## Testing
